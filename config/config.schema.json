@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "type": "object",
+  "properties": {
+    "input_dir": {
+      "type": "string"
+    },
+    "results_dir": {
+      "type": "string"
+    },
+    "batch_size": {
+      "type": "integer"
+    },
+    "dorado_model": {
+      "type": "string"
+    },
+    "minimap2_fasta": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "input_dir",
+    "results_dir",
+    "batch_size",
+    "dorado_model",
+    "minimap2_fasta"
+  ]
+}
