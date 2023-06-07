@@ -1,11 +1,10 @@
+import hashlib
 import os
 import sys
-import hashlib
 from collections import defaultdict
 from pathlib import Path
 
 import snakemake.utils
-
 
 configfile: "config/config.yaml"
 
@@ -273,7 +272,8 @@ rule sniffles2_snf:
     output:
         snf=f"{RESULTS_DIR}/{{sample}}.pass.snf",
     threads: 8
-    # FIXME: Needs envmodule
+    envmodules:
+        "sniffles/2.0.7",
     shell:
         """
         sniffles \
