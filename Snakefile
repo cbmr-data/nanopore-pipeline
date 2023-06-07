@@ -9,12 +9,12 @@ import snakemake.utils
 
 configfile: "config/config.yaml"
 
-
 snakemake.utils.validate(config, "config/config.schema.json")
 
 # Destination for pipeline output
 RESULTS_DIR = config["results_dir"]
-
+# Location of custom scripts
+SCRIPTS_DIR = os.path.join(workflow.basedir, "scripts")
 
 def abort(*args, **kwargs):
     kwargs["file"] = sys.stderr
@@ -113,6 +113,11 @@ rule pipeline:
     input:
         f"{RESULTS_DIR}/genotypes.vcf.gz",
         expand(f"{RESULTS_DIR}/{{sample}}.fq.gz", sample=SAMPLES),
+        # MultiQC reports from FastQC reports
+        f"{RESULTS_DIR}/statistics/premap/multiqc.html",
+        f"{RESULTS_DIR}/statistics/postmap/multiqc.html",
+        # Alignment metrics
+        f"{RESULTS_DIR}/statistics/metrics.json",
 
 
 rule dorado_symlinks:
@@ -268,6 +273,7 @@ rule sniffles2_snf:
     output:
         snf=f"{RESULTS_DIR}/{{sample}}.pass.snf",
     threads: 8
+    # FIXME: Needs envmodule
     shell:
         """
         sniffles \
@@ -307,4 +313,128 @@ rule sniffles2_vcf:
             --reference "{input.fa}" \
             --input "{input.tsv}" \
             --vcf "{output.vcf}"
+        """
+
+
+#######################################################################################
+## QC
+
+
+rule fastqc_fastq:
+    input:
+        fq="{RESULTS_DIR}/{sample}.fq.gz",
+    output:
+        html=f"{RESULTS_DIR}/statistics/premap/{{sample}}_fastqc.html",
+        data=f"{RESULTS_DIR}/statistics/premap/{{sample}}_fastqc.zip",
+    params:
+        outdir=os.path.join(RESULTS_DIR, "statistics", "premap"),
+        sample=config["qc_sample"],
+    envmodules:
+        "perl/5.26.3",
+        "openjdk/20.0.0",
+        "fastqc/0.11.9",
+        # FIXME: Seqtk module
+    shell:
+        """
+        # -t is used to force the allocation of additional memory
+        seqtk sample {input} {params.sample} | fastqc -t 8 -f fastq -o {params.outdir} stdin:{wildcards.sample}
+        """
+
+
+rule fastqc_bam:
+    input:
+        bam=f"{RESULTS_DIR}/{{sample}}.{{kind}}.bam",
+    output:
+        html=f"{RESULTS_DIR}/statistics/postmap/{{sample}}_{{kind}}_fastqc.html",
+        data=f"{RESULTS_DIR}/statistics/postmap/{{sample}}_{{kind}}_fastqc.zip",
+    threads: 4
+    params:
+        outdir=os.path.join(RESULTS_DIR, "statistics", "postmap"),
+        sample=config["qc_sample"],
+    envmodules:
+        "perl/5.26.3",
+        "openjdk/20.0.0",
+        "fastqc/0.11.9",
+        "samtools/1.17",
+    shell:
+        r"""
+        # fastqc -t is used to force the allocation of additional memory
+        samtools bam2fq -@ {threads} {input} \
+            | seqtk sample - {params.sample} \
+            | fastqc -t 8 --java {SCRIPTS_DIR}/java_wrapper.sh -f fastq -o {params.outdir} stdin:{wildcards.sample}_{wildcards.kind}
+        """
+
+
+#######################################################################################
+
+
+rule multiqc_fastq:
+    input:
+        zip=expand(
+            f"{RESULTS_DIR}/statistics/premap/{{sample}}_fastqc.zip", sample=SAMPLES
+        ),
+    output:
+        html=f"{RESULTS_DIR}/statistics/premap/multiqc.html",
+        data=f"{RESULTS_DIR}/statistics/premap/multiqc_data.zip",
+    # FIXME: Needs envmodule
+    shell:
+        r"""
+        multiqc --zip-data-dir \
+            --filename {output.html} \
+            {input.zip}
+        """
+
+
+rule multiqc_bam:
+    input:
+        zip=expand(
+            f"{RESULTS_DIR}/statistics/postmap/{{sample}}_{{kind}}_fastqc.zip",
+            sample=SAMPLES,
+            kind=("pass", "fail"),
+        ),
+    output:
+        html=f"{RESULTS_DIR}/statistics/postmap/multiqc.html",
+        data=f"{RESULTS_DIR}/statistics/postmap/multiqc_data.zip",
+    # FIXME: Needs envmodule
+    shell:
+        r"""
+        multiqc --zip-data-dir \
+            --filename {output.html} \
+            {input.zip}
+        """
+
+
+#######################################################################################
+
+
+rule qc_stats:
+    input:
+        passed=f"{RESULTS_DIR}/{{sample}}.pass.bam",
+        failed=f"{RESULTS_DIR}/{{sample}}.fail.bam",
+    output:
+        json=f"{RESULTS_DIR}/{{sample}}.cache/metrics.json",
+    envmodules:
+        "python/3.9.16",
+    params:
+        sample=config["qc_sample"],
+    shell:
+        r"""
+        python3 scripts/qc_metrics.py stats --nsample {params.sample} \
+            {input:q} \
+            > {output:q}
+        """
+
+
+rule qc_stats_join:
+    input:
+        expand(f"{RESULTS_DIR}/{{sample}}.cache/metrics.json", sample=SAMPLES),
+    output:
+        f"{RESULTS_DIR}/statistics/metrics.json",
+    envmodules:
+        "python/3.9.16",
+    shell:
+        r"""
+        python3 scripts/qc_metrics.py join \
+            {input:q} \
+            > {output:q}
         """

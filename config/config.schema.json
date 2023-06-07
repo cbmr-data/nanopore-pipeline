@@ -11,6 +11,9 @@
     "batch_size": {
       "type": "integer"
     },
+    "qc_sample": {
+      "type": "integer"
+    },
     "dorado_model": {
       "type": "string"
     },
@@ -22,6 +25,7 @@
     "input_dir",
     "results_dir",
     "batch_size",
+    "qc_sample",
     "dorado_model",
     "minimap2_fasta"
   ]
