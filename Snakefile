@@ -57,7 +57,7 @@ def _collect_fast5s(source, groups=None):
     for it in source.iterdir():
         if it.is_dir():
             _collect_fast5s(it, groups)
-        elif it.suffix.lower() == ".fast5":
+        elif it.suffix.lower() in (".fast5", ".pod5"):
             groups[it.parent].append(str(it))
 
     return groups.values()
@@ -322,7 +322,7 @@ rule sniffles2_vcf:
 
 rule fastqc_fastq:
     input:
-        fq="{RESULTS_DIR}/{sample}.fq.gz",
+        fq=f"{RESULTS_DIR}/{{sample}}.fq.gz",
     output:
         html=f"{RESULTS_DIR}/statistics/premap/{{sample}}_fastqc.html",
         data=f"{RESULTS_DIR}/statistics/premap/{{sample}}_fastqc.zip",
