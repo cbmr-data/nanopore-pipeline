@@ -146,7 +146,7 @@ rule dorado:
         batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s",
     output:
         # FIXME: Save as FASTQ
-        ubam=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.ubam",
+        ubam=temporary(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.ubam"),
     params:
         model=config["dorado_model"],
     threads: 8
@@ -171,7 +171,7 @@ rule minimap2:
         mmi=config["minimap2_fasta"] + ".mmi",
         bam=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.ubam",
     output:
-        bam=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.bam",
+        bam=temporary(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.bam"),
     threads: 16
     envmodules:
         "minimap2/2.26",
@@ -192,7 +192,7 @@ rule merge_fq_list:
     input:
         ubam=lambda wildcards: CHUNKS[wildcards.sample]["ubam"],
     output:
-        txt=f"{RESULTS_DIR}/{{sample}}.cache/_filelist_fq.txt",
+        txt=temporary(f"{RESULTS_DIR}/{{sample}}.cache/_filelist_fq.txt"),
     run:
         with open(output.txt, "wt") as handle:
             for filename in input:
@@ -230,7 +230,7 @@ rule merge_bam_list:
     input:
         lambda wildcards: CHUNKS[wildcards.sample]["bam"],
     output:
-        txt=f"{RESULTS_DIR}/{{sample}}.cache/_filelist.txt",
+        txt=temporary(f"{RESULTS_DIR}/{{sample}}.cache/_filelist.txt"),
     run:
         with open(output.txt, "wt") as handle:
             for filename in input:
@@ -332,8 +332,8 @@ rule fastqc_fastq:
     envmodules:
         "perl/5.26.3",
         "openjdk/20.0.0",
-        "fastqc/0.11.9",
-        # FIXME: Seqtk module
+        "fastqc/0.11.9", # requies perl and openjdk
+        "seqtk/1.4",
     shell:
         """
         # -t is used to force the allocation of additional memory
@@ -354,7 +354,7 @@ rule fastqc_bam:
     envmodules:
         "perl/5.26.3",
         "openjdk/20.0.0",
-        "fastqc/0.11.9",
+        "fastqc/0.11.9", # requires perl and openjdk
         "samtools/1.17",
     shell:
         r"""
@@ -412,7 +412,7 @@ rule qc_stats:
         passed=f"{RESULTS_DIR}/{{sample}}.pass.bam",
         failed=f"{RESULTS_DIR}/{{sample}}.fail.bam",
     output:
-        json=f"{RESULTS_DIR}/{{sample}}.cache/metrics.json",
+        json=temporary(f"{RESULTS_DIR}/{{sample}}.cache/metrics.json"),
     envmodules:
         "python/3.9.16",
     params:
