@@ -145,7 +145,6 @@ rule dorado:
     input:
         batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s",
     output:
-        # FIXME: Save as FASTQ
         ubam=temporary(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.ubam"),
     params:
         model=config["dorado_model"],
@@ -186,26 +185,8 @@ rule minimap2:
         """
 
 
-rule merge_fq_list:
-    group:
-        "merge:fq"
-    input:
-        ubam=lambda wildcards: CHUNKS[wildcards.sample]["ubam"],
-    output:
-        txt=temporary(f"{RESULTS_DIR}/{{sample}}.cache/_filelist_fq.txt"),
-    run:
-        with open(output.txt, "wt") as handle:
-            for filename in input:
-                name, _ = os.path.basename(filename).split(".", 1)
-                print(filename, sep="\t", file=handle)
-
-
-# TODO: Use igzip for decompression
 rule merge_fq:
-    group:
-        "merge:fq"
     input:
-        txt=f"{RESULTS_DIR}/{{sample}}.cache/_filelist_fq.txt",
         ubam=lambda wildcards: CHUNKS[wildcards.sample]["ubam"],
     output:
         fq=f"{RESULTS_DIR}/{{sample}}.fq.gz",
@@ -218,33 +199,18 @@ rule merge_fq:
         readonly DECOMPRESS=$(expr {threads} / 3 \| 1)
         readonly COMPRESS=$(expr {threads} - ${{DECOMPRESS}} \| 1)
 
-        xargs -n1 --delimiter='\n' --arg-file={input.txt} samtools bam2fq -T '*' -@${{DECOMPRESS}} \
+        samtools cat {input.ubam} \
+            | samtools bam2fq -T '*' -@${{DECOMPRESS}} \
             | pigz -p${{COMPRESS}} \
             > {output.fq}
         """
 
 
-rule merge_bam_list:
-    group:
-        "merge:bam"
-    input:
-        lambda wildcards: CHUNKS[wildcards.sample]["bam"],
-    output:
-        txt=temporary(f"{RESULTS_DIR}/{{sample}}.cache/_filelist.txt"),
-    run:
-        with open(output.txt, "wt") as handle:
-            for filename in input:
-                name, _ = os.path.basename(filename).split(".", 1)
-                print(filename, sep="\t", file=handle)
-
-
 rule merge_bam:
-    group:
-        "merge:bam"
     params:
         qscore_filter=10,
     input:
-        bams=f"{RESULTS_DIR}/{{sample}}.cache/_filelist.txt",
+        bams=lambda wildcards: CHUNKS[wildcards.sample]["bam"],
     output:
         passed=f"{RESULTS_DIR}/{{sample}}.pass.bam",
         passed_csi=f"{RESULTS_DIR}/{{sample}}.pass.bam.csi",
@@ -260,7 +226,7 @@ rule merge_bam:
             THREADS=$(({threads} / 2))
         fi
 
-        samtools merge -@ ${{THREADS}} -b {input} -  \
+        samtools merge -@ ${{THREADS}} -u - {input} \
             | samtools view -@ ${{THREADS}} --write-index -e '[qs] >= {params.qscore_filter}' --output {output.passed} --unoutput {output.failed} -b -
         """
 
