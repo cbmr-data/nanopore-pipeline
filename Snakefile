@@ -85,7 +85,7 @@ def _generate_chunks(destination, samples):
                 os.path.join(destination, sample + ".cache", f"{key}.{extension}")
                 for key in batches
             ]
-            for extension in ("bam", "ubam")
+            for extension in ("bam", "fq.gz")
         }
         for sample, batches in sorted(samples.items())
     }
@@ -145,10 +145,10 @@ rule dorado:
     input:
         batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s",
     output:
-        ubam=temporary(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.ubam"),
+        fastq=temporary(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fq.gz"),
     params:
         model=config["dorado_model"],
-    threads: 8
+    threads: 6
     resources:
         gpuqueue=1,  # Used to limit how many tasks are queud on the GPU node
         slurm_partition="gpuqueue",
@@ -157,10 +157,13 @@ rule dorado:
         "cuda/11.8",
         "dorado/0.2.4",
         "samtools/1.17",
+        # TODO: "htslib/?.?",
     shell:
         """
         dorado basecaller --recursive --device "cuda:all" {params.model} {input.batch} \
-            | samtools view -@ 4 --no-PG -b -o {output.ubam} -
+            | samtools bam2fq -T '*' \
+            | bgzip -@ 4 \
+            > {output.fastq}
         """
 
 
@@ -168,17 +171,16 @@ rule minimap2:
     input:
         fa=config["minimap2_fasta"],
         mmi=config["minimap2_fasta"] + ".mmi",
-        bam=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.ubam",
+        fastq=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fq.gz",
     output:
         bam=temporary(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.bam"),
-    threads: 16
+    threads: 14
     envmodules:
         "minimap2/2.26",
         "samtools/1.17",
     shell:
         """
-        samtools bam2fq -@ 2 -T '*' {input.bam} \
-            | minimap2 -y -t 10 -ax map-ont -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}' {input.mmi} - \
+            minimap2 -y -t 10 -ax map-ont -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}' {input.mmi} {input.fastq} \
             | samtools sort -@ 4 -u \
             | samtools calmd -Q -@ 4 -b - {input.fa} \
             > {output.bam}
@@ -187,22 +189,14 @@ rule minimap2:
 
 rule merge_fq:
     input:
-        ubam=lambda wildcards: CHUNKS[wildcards.sample]["ubam"],
+        fastq=lambda wildcards: CHUNKS[wildcards.sample]["fq.gz"],
     output:
-        fq=f"{RESULTS_DIR}/{{sample}}.fq.gz",
-    threads: 12
+        fastq=f"{RESULTS_DIR}/{{sample}}.fq.gz",
     envmodules:
-        "samtools/1.17",
+        "python/3.9.16",
     shell:
         r"""
-        # Allocate a third of the threads to decompression and the rest to compression
-        readonly DECOMPRESS=$(expr {threads} / 3 \| 1)
-        readonly COMPRESS=$(expr {threads} - ${{DECOMPRESS}} \| 1)
-
-        samtools cat {input.ubam} \
-            | samtools bam2fq -T '*' -@${{DECOMPRESS}} \
-            | pigz -p${{COMPRESS}} \
-            > {output.fq}
+        python3 scripts/mergebgzip.py {input.fastq} > {output.fastq}
         """
 
 
