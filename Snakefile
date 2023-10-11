@@ -71,9 +71,11 @@ def _collect_samples(destination, source, batch_size=25):
         for group in _collect_fast5s(it):
             group.sort()  # Ensure stable batches even filesystem order changes
 
-            for batch in fragment(batch_size, group):
-                key = sha256(batch)
-                sample[sha256(batch)] = batch
+            if batch_size is None:
+                sample[sha256(group)] = group
+            else:
+                for batch in fragment(batch_size, group):
+                    sample[sha256(batch)] = batch
 
     return samples
 

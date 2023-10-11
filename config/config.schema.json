@@ -9,7 +9,7 @@
       "type": "string"
     },
     "batch_size": {
-      "type": "integer"
+      "type": ["integer", "null"]
     },
     "qc_sample": {
       "type": "integer"
