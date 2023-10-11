@@ -154,7 +154,7 @@ rule dorado:
     resources:
         gpuqueue=1,  # Used to limit how many tasks are queud on the GPU node
         slurm_partition="gpuqueue",
-        slurm_extra="--gres=gpu:a100:2",
+        slurm_extra="--gres=gpu:a100:1",
     envmodules:
         "cuda/11.8",
         "dorado/0.2.4",
