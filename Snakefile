@@ -376,7 +376,6 @@ rule multiqc_bam:
 rule qc_stats:
     input:
         passed=f"{RESULTS_DIR}/{{sample}}.pass.bam",
-        failed=f"{RESULTS_DIR}/{{sample}}.fail.bam",
     output:
         json=temporary(f"{RESULTS_DIR}/{{sample}}.cache/metrics.json"),
     envmodules:
