@@ -158,8 +158,9 @@ rule dorado:
     envmodules:
         "cuda/11.8",
         "dorado/0.2.4",
-        "samtools/1.17",
-        # TODO: "htslib/?.?",
+        "libdeflate/1.18",
+        "htslib/1.18",
+        "samtools-libdeflate/1.18",
     shell:
         """
         dorado basecaller --recursive --device "cuda:all" {params.model} {input.batch} \
@@ -179,7 +180,8 @@ rule minimap2:
     threads: 14
     envmodules:
         "minimap2/2.26",
-        "samtools/1.17",
+        "libdeflate/1.18",
+        "samtools-libdeflate/1.18",
     shell:
         """
             minimap2 -y -t 10 -ax map-ont -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}' {input.mmi} {input.fastq} \
@@ -214,7 +216,8 @@ rule merge_bam:
         failed_csi=f"{RESULTS_DIR}/{{sample}}.fail.bam.csi",
     threads: 8
     envmodules:
-        "samtools/1.17",
+        "libdeflate/1.18",
+        "samtools-libdeflate/1.18",
     shell:
         """
         THREADS=1
@@ -317,7 +320,8 @@ rule fastqc_bam:
         "perl/5.26.3",
         "openjdk/20.0.0",
         "fastqc/0.11.9", # requires perl and openjdk
-        "samtools/1.17",
+        "libdeflate/1.18",
+        "samtools-libdeflate/1.18",
     shell:
         r"""
         # fastqc -t is used to force the allocation of additional memory
