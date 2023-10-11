@@ -1,5 +1,7 @@
 /.snakemake
+/.vscode
 /batches
 /resources
 /results
 /scratch
+/venv
