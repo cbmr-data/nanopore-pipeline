@@ -1,31 +1,56 @@
 #!/usr/bin/env python3
 # -*- coding: utf8 -*-
 # pyright: strict
-import os
 import argparse
 import json
+import os
 import random
 import sys
 from collections import Counter, defaultdict
+from itertools import product
 from pathlib import Path
-from typing import Any, List, Dict, Tuple, Union, Optional, Iterable, TypeVar
+from typing import Any, List, Dict, Tuple, Optional, Iterable, TypeVar
+from typing_extensions import TypedDict
 
 import pysam
 
-try:
-    if sys.stderr.isatty():
-        import tqdm
-    else:
-        tqdm = None
-except ImportError:
-    tqdm = None
+QueryLens = TypedDict(
+    "QueryLens",
+    {
+        "mapped": Dict[int, int],
+        "unmapped": Dict[int, int],
+        "supplementary": Dict[int, int],
+        "secondary": Dict[int, int],
+    },
+)
 
-JSONKey = Union[str, int, float, None]
-JSONValue = Union[str, int, float]
-JSON = Dict[JSONKey, Union[JSONValue, "JSON"]]
-
+Statistics = TypedDict(
+    "Statistics",
+    {
+        "query_len": QueryLens,
+        "mapq": Dict[Optional[int], int],
+        "qs": Dict[int, int],
+        "n": Dict[int, int],
+        "cigar": Dict[str, Dict[int, int]],
+        "alignment": Dict[str, int],
+        "pct_mapped": Dict[int, int],
+        "pct_mapped_mm": Dict[int, int],
+    },
+)
 
 T = TypeVar("T")
+
+
+def progress(iterable: Iterable[T], desc: Optional[str] = None) -> Iterable[T]:
+    try:
+        if sys.stderr.isatty():
+            import tqdm
+
+            return tqdm.tqdm(iterable, unit_scale=True, desc=desc)
+    except ImportError:
+        pass
+
+    return iterable
 
 
 class ReservoirSample:
@@ -51,49 +76,46 @@ class ReservoirSample:
         self._index += 1
 
 
-def progress(iterable: Iterable[T], desc: Optional[str] = None) -> Iterable[T]:
-    if tqdm is None:
-        return iterable
+def new_sample() -> Statistics:
+    return {
+        "query_len": {
+            "mapped": Counter(),
+            "unmapped": Counter(),
+            "supplementary": Counter(),
+            "secondary": Counter(),
+        },
+        "mapq": Counter(),
+        "qs": Counter(),
+        "n": Counter(),
+        "cigar": {key: Counter() for key in "MIDNSHP"},
+        "alignment": {
+            f"{key1}/{key2}": 0
+            for (key1, key2) in product("NACGT-", repeat=2)
+            if key1 != "-" or key2 != "-"
+        },
+        "pct_mapped": Counter(),
+        "pct_mapped_mm": Counter(),
+    }
 
-    return tqdm.tqdm(iterable, unit_scale=True, desc=desc)
 
-
-def get(data: JSON, *path: JSONKey) -> JSON:
-    current: Union[JSON, JSONValue] = data
-    for key in path:
-        assert isinstance(current, dict)
-
-        try:
-            current = current[key]
-        except KeyError:
-            temp = {}
-            current[key] = temp
-            current = temp
-
-    assert isinstance(current, dict)
-    return current
-
-
-def increment(data: JSON, *path: JSONKey, count: int = 1) -> None:
-    current = get(data, *path[:-1])
-
-    try:
-        current[path[-1]] += count  # type: ignore
-    except KeyError:
-        current[path[-1]] = count
+def flatten_counts(value: Any) -> Any:
+    if isinstance(value, Counter):
+        if all(isinstance(key, int) for key in value):
+            return {"x": list(value), "n": list(value.values())}
+    elif isinstance(value, dict):
+        return {key: flatten_counts(value) for key, value in value.items()}
+    else:
+        return value
 
 
 def collect_basic_stats(
     sample: str,
-    stats: JSON,
+    stats: Statistics,
     subsample: ReservoirSample,
     filename: Path,
     nthreads: int = 4,
 ) -> None:
     with pysam.AlignmentFile(os.fspath(filename), threads=nthreads) as handle:
-        sample_stats = stats.setdefault(sample, {})
-        assert isinstance(sample_stats, dict)
-
         for record in progress(handle, desc=f"{sample} [{filename}]"):
             alignment_type = "mapped"
             if record.is_unmapped:
@@ -104,7 +126,7 @@ def collect_basic_stats(
                 alignment_type = "secondary"
 
             # Query lengths
-            increment(sample_stats, "query_len", alignment_type, record.query_length)
+            stats["query_len"][alignment_type][record.query_length] += 1
 
             # Alternative/etc. alignments are ignored for the remaining statistics
             if record.is_supplementary or record.is_secondary:
@@ -112,11 +134,13 @@ def collect_basic_stats(
 
             # Mean phred encoded base error probability
             mapq = None if record.is_unmapped else record.mapping_quality
+            stats["mapq"][mapq] += 1
+
             mean_quality_score: int = record.get_tag("qs")  # type: ignore
-            increment(sample_stats, "qs", mapq, mean_quality_score)
+            stats["qs"][mean_quality_score] += 1
 
             # Number of uncalled bases in the query
-            increment(sample_stats, "n", record.query_sequence.count("N"))
+            stats["n"][record.query_sequence.count("N")] += 1
 
             # matches, mismatches, etc.
             if not record.is_unmapped:
@@ -125,12 +149,9 @@ def collect_basic_stats(
 
 def collect_detailed_stats(
     sample: str,
-    stats: JSON,
+    stats: Statistics,
     subsample: ReservoirSample,
 ) -> None:
-    sample_stats = stats.setdefault(sample, {})
-    assert isinstance(sample_stats, dict)
-
     for record in progress(subsample.items, desc=sample):
         query_sequence = record.query_sequence
         assert query_sequence is not None
@@ -144,7 +165,7 @@ def collect_detailed_stats(
             # The ops are 'MIDNSHP=X' but we merge match (=)/mismatch (X) into M
             op = "MIDNSHPMM"[op]
             cigar_sums[op] += length * count
-            increment(sample_stats, "cigar", op, length, count=count)
+            stats["cigar"][op][length] += count
 
         query_sequence = record.query_sequence
         assert query_sequence is not None, record.query_name
@@ -152,52 +173,57 @@ def collect_detailed_stats(
 
         alignment_counts: Dict[Any, int] = Counter()
         for qpos, _, ref in record.get_aligned_pairs(with_seq=True):  # type: ignore
-            ref = ref if ref is None else ref.upper()
-            query = None if qpos is None else query_sequence[qpos]
-            alignment_counts[(ref, query)] += 1
+            ref = "-" if ref is None else ref.upper()
+            query = "-" if qpos is None else query_sequence[qpos]
+            alignment_counts[f"{ref}/{query}"] += 1
 
-        for (ref, alt), count in alignment_counts.items():
-            increment(sample_stats, "alignment", ref, alt, count=count)
+        for key, count in alignment_counts.items():
+            stats["alignment"][key] += count
 
         # Percent mapped (excludes indels and clipping, etc.)
         frac_mapped = int(round(cigar_sums["M"] * 100 / query_length))
-        increment(sample_stats, "pct_mapped", frac_mapped)
+        stats["pct_mapped"][frac_mapped] += 1
 
         # Percent mapped bases that are mismatches to reference
         # The NM tag as calculated by `samtools calmd` counts indels as mismatches:
         # https://github.com/samtools/samtools/blob/75a780628e8b7a4e69bd3b2112979f635ed82320/bam_md.c#L92
         n_mismatches: int = record.get_tag("NM") - cigar_sums["D"] - cigar_sums["I"]  # type: ignore
-        frac_mismatches = round(n_mismatches * 100 / cigar_sums["M"], 1)
-        increment(sample_stats, "pct_mapped_mm", frac_mismatches)
+        pct_mismatches = int(round(n_mismatches * 100 / cigar_sums["M"]))
+        stats["pct_mapped_mm"][pct_mismatches] += 1
 
 
 def main_stats(args: argparse.Namespace) -> int:
     samples: Dict[str, List[Path]] = defaultdict(list)
     for filename in args.files:
-        sample = Path(filename).stem
+        sample, _ = Path(filename).stem.split(".", 1)
         samples[sample].append(filename)
 
-    stats: JSON = {}
+    stats: Dict[str, Statistics] = {}
     for sample, filenames in samples.items():
+        sample_stats = stats[sample] = new_sample()
         subsample = ReservoirSample(args.nsample)
         for filename in filenames:
             collect_basic_stats(
                 sample=sample,
-                stats=stats,
+                stats=sample_stats,
                 subsample=subsample,
                 filename=filename,
                 nthreads=args.nthreads,
             )
 
-        collect_detailed_stats(sample=sample, stats=stats, subsample=subsample)
+        collect_detailed_stats(
+            sample=sample,
+            stats=sample_stats,
+            subsample=subsample,
+        )
 
-    json.dump(stats, sys.stdout)
+    json.dump(flatten_counts(stats), sys.stdout)
 
     return 0
 
 
 def main_join(args: argparse.Namespace) -> int:
-    stats: JSON = {}
+    stats = {}
     for filename in args.files:
         with filename.open() as handle:
             data = json.load(handle)
