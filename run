@@ -40,11 +40,6 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         default=Path("batches"),
     )
     parser.add_argument(
-        "--default-model",
-        type=Path,
-        default=Path("batches/default_model"),
-    )
-    parser.add_argument(
         "--profile",
         type=Path,
         default=Path("profile"),
@@ -61,38 +56,34 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 def main(argv: List[str]) -> int:
     args = parse_args(argv)
 
-    default_model: Path = args.default_model
     batch: Path = args.batches / args.batch
-    model: Path = args.batches / (args.batch + ".model")
+    results: Path = args.results / args.batch
     profile: Path = args.profile
+    models = Path(f"{batch}.models.tsv")
 
     if not os.path.lexists(batch):
         abort(f"no batch directory at {quote(batch)}")
     elif not batch.is_dir():
         abort(f"invalid batch directory at {quote(batch)}")
-
-    if not os.path.lexists(model):
-        eprint("Using default model")
-        model = default_model
-
-    if not model.is_dir():
-        abort(f"invalid model directory at {quote(model)}")
+    elif not models.is_file():
+        abort(f"*.models.tsv table not found for {quote(batch)}")
 
     if not profile.is_dir():
         abort(f"invalid profile directory at {quote(profile)}")
 
-    if model.is_symlink():
-        model = model.resolve()
-        eprint("Using model at", model)
-
     command: List[Union[str, Path]] = [
         "snakemake",
+        # excluding defaults 'code' and 'software-env'
+        "--rerun-triggers",
+        "mtime",
+        "params",
+        "input",
         "--profile",
         profile,
         "--config",
         f"input_dir={batch}",
-        f"results_dir={args.results}",
-        f"dorado_model={model}",
+        f"results_dir={results}",
+        f"dorado_models={models}",
     ]
     command.extend(args.args)
 

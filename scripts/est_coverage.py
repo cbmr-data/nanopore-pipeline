@@ -213,8 +213,8 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--batches-root", type=Path, default=Path("batches"))
     parser.add_argument("--results-root", type=Path, default=Path("results"))
     parser.add_argument("--min-length", type=int, default=500)
-    parser.add_argument("--batch-size", type=int, default=25)
-    parser.add_argument("--sample-bams", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=90)
+    parser.add_argument("--sample-bams", type=int, default=1)
 
     return parser.parse_args(argv)
 

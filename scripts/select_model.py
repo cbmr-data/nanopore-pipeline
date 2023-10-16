@@ -145,8 +145,8 @@ def read_model_table(filepath: Path) -> list[Model]:
                 abort(
                     f"invalid bases_per_second at line {linenum} in {filepath}: {bases_per_second!r}"
                 )
-            elif not Path(model).is_dir():
-                abort(f"model at line {linenum} in {filepath} not a dir: {model!r}")
+            elif not (Path(model) / "config.toml").is_file():
+                abort(f"model at line {linenum} in {filepath} not a model: {model!r}")
 
             models.append(
                 Model(

@@ -1,14 +1,15 @@
 # No more than 2 GPU tasks can run at once + a few jobs for other tasks
-jobs: 12
+jobs: 8
 #
 slurm: true
 use-envmodules: true
 resources:
-  - "gpuqueue=4"  # Queue at most 4 tasks on the GPU node
+  # Queue at most 3 GPU-using tasks on the GPU node
+  - "gputask=3"
+  # Queue at most 2 misc tasks on the GPU node
+  - "gpumisc=2"
 default-resources:
-  - "slurm_mem_mb_per_cpu=15948"
-  - "slurm_partition=standardqueue"
-  - "runtime=2880" # 48 hours
+  - "mem_mb=None"
 max-jobs-per-second: 5
 max-status-checks-per-second: 4
 local-cores: 16

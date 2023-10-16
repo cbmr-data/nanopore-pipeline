@@ -28,8 +28,8 @@ elif not Path(config["input_dir"]).is_dir():
     abort("Per sample FAST5 directories not found at", config["input_dir"])
 elif not Path(config["minimap2_fasta"]).is_file():
     abort("Reference FASTA not found at", config["minimap2_fasta"])
-elif not (Path(config["dorado_model"]) / "config.toml").is_file():
-    abort("Dorado model not found at", config["dorado_model"])
+elif not Path(config["dorado_models"]).is_file():
+    abort("Dorado model table not found at", config["dorado_models"])
 
 
 #######################################################################################
@@ -65,7 +65,7 @@ def _collect_fast5s(source, groups=None):
 
 def _collect_samples(destination, source, batch_size=25):
     samples = {}
-    for it in Path(source).iterdir():
+    for it in sorted(Path(source).iterdir()):
         samples[it.name] = sample = {}
 
         for group in _collect_fast5s(it):
@@ -113,7 +113,7 @@ wildcard_constraints:
 rule pipeline:
     input:
         f"{RESULTS_DIR}/genotypes.vcf.gz",
-        expand(f"{RESULTS_DIR}/{{sample}}.fq.gz", sample=SAMPLES),
+        expand(f"{RESULTS_DIR}/{{sample}}.fq.gz", sample=sorted(SAMPLES)),
         # MultiQC reports from FastQC reports
         f"{RESULTS_DIR}/statistics/premap/multiqc.html",
         f"{RESULTS_DIR}/statistics/postmap/multiqc.html",
@@ -124,14 +124,13 @@ rule pipeline:
 rule dorado_symlinks:
     priority: 50
     group:
-        "dorado"
+        "setup"
     input:
         lambda wildcards: SAMPLES[wildcards.sample][wildcards.hash],
     output:
-        batch=temporary(directory(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s")),
+        batch=directory(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s"),
     resources:
-        gpuqueue=1,  # Used to limit how many tasks are queud on the GPU node
-        slurm_partition="gpuqueue",
+        gpumisc=1,  # Used to limit how many tasks are queud on the GPU node
     run:
         os.makedirs(output.batch, exist_ok=True)
         for filepath in input:
@@ -139,34 +138,55 @@ rule dorado_symlinks:
             dst = os.path.join(output.batch, os.path.basename(filepath))
             os.symlink(src, dst)
 
-
-rule dorado:
-    priority: 100
+rule dorado_model:
+    priority: 75
     group:
-        "dorado"
+        "setup"
     input:
         batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s",
     output:
-        fastq=temporary(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fq.gz"),
+        model=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.model.txt",
     params:
-        model=config["dorado_model"],
-    threads: 6
+        models=config["dorado_models"],
     resources:
-        gpuqueue=1,  # Used to limit how many tasks are queud on the GPU node
+        gpumisc=1,  # Used to limit how many tasks are queud on the GPU node
+    shell:
+        """
+        readonly DEST="{output.model}.${{RANDOM}}"
+
+        ./venv/bin/python3 scripts/select_model.py {params.models:q} {input.batch:q} > "${{DEST}}"
+        mv "${{DEST}}" {output.model:q}
+        """
+
+rule dorado:
+    priority: 100
+    input:
+        batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s",
+        model=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.model.txt",
+    output:
+        fastq=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fq.gz",
+    threads: 8
+    resources:
+        gputask=1,  # Used to limit how many tasks are queud on the GPU node
         slurm_partition="gpuqueue",
         slurm_extra="--gres=gpu:a100:1",
     envmodules:
         "cuda/11.8",
-        "dorado/0.2.4",
+        "dorado/0.3.4",
         "libdeflate/1.18",
         "htslib/1.18",
         "samtools-libdeflate/1.18",
     shell:
         """
-        dorado basecaller --recursive --device "cuda:all" {params.model} {input.batch} \
+        readonly MODEL=$(cat {input.model:q})
+        readonly DEST="{output.fastq}.${{RANDOM}}"
+
+        dorado basecaller --verbose --recursive --device "cuda:all" "${{MODEL}}" {input.batch:q} \
             | samtools bam2fq -T '*' \
-            | bgzip -@ 4 \
-            > {output.fastq}
+            | bgzip -@ 6 \
+            > "${{DEST}}"
+
+        mv "${{DEST}}" {output.fastq:q}
         """
 
 
@@ -184,10 +204,14 @@ rule minimap2:
         "samtools-libdeflate/1.18",
     shell:
         """
+            readonly DEST="{output.bam}.${{RANDOM}}"
+
             minimap2 -y -t 10 -ax map-ont -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}' {input.mmi} {input.fastq} \
-            | samtools sort -@ 4 -u \
+            | samtools sort -@ 4 -u -T {output.bam} \
             | samtools calmd -Q -@ 4 -b - {input.fa} \
-            > {output.bam}
+            > "${{DEST}}"
+
+            mv "${{DEST}}" {output.bam:q}
         """
 
 
@@ -205,6 +229,7 @@ rule merge_fq:
 
 
 rule merge_bam:
+    priority: 200
     params:
         qscore_filter=10,
     input:

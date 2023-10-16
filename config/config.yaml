@@ -4,13 +4,10 @@ input_dir: "data"
 results_dir: "output"
 
 # Number of fast5 files per batch
-batch_size: 25
+batch_size: 90
 
 # Number of reads sampled for detailed QC reports
 qc_sample: 1000000
-
-# Location of dorado basecalling model
-dorado_model: "/opt/software/dorado/0.2.4/models/dna_r9.4.1_e8_sup@v3.3"
 
 # Location of reference genome (FASTA) used by minimap
 minimap2_fasta: "resources/Homo_sapiens.GRCh38_full_analysis_set_plus_decoy_hla_noColonsAsterisks.fa"
