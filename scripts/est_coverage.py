@@ -7,21 +7,11 @@ import argparse
 import hashlib
 import random
 import sys
-from pathlib import Path
 from collections import defaultdict
-from typing import (
-    Any,
-    List,
-    Optional,
-    Dict,
-    TypeVar,
-    Sequence,
-    Iterable,
-    Iterator,
-    Tuple,
-    NoReturn,
-)
 from dataclasses import dataclass
+from pathlib import Path
+from typing import (Any, Dict, Iterable, Iterator, List, NoReturn, Optional,
+                    Sequence, Tuple, TypeVar)
 
 import pysam
 from tqdm import tqdm
@@ -29,6 +19,8 @@ from tqdm import tqdm
 
 @dataclass
 class BAMStats:
+    total_batches: int = 0
+    total_batches_size: int = 0
     sampled_batches: int = 0
     completed_batches: int = 0
     genome_size: int = 0
@@ -60,6 +52,22 @@ class BAMStats:
             bases_clipped=int(self.bases_clipped * m),
         )
 
+    def add(self, other: BAMStats) -> None:
+        self.genome_size = self.genome_size or other.genome_size
+
+        self.total_batches += other.total_batches
+        self.total_batches_size += other.total_batches_size
+        self.sampled_batches += other.sampled_batches
+        self.completed_batches += other.completed_batches
+        self.short_reads_excluded += other.short_reads_excluded
+        self.unmapped_reads_excluded += other.unmapped_reads_excluded
+        self.long_reads_included += other.long_reads_included
+        self.total_query_length += other.total_query_length
+        self.bases_mapped += other.bases_mapped
+        self.bases_deleted += other.bases_deleted
+        self.bases_inserted += other.bases_inserted
+        self.bases_clipped += other.bases_clipped
+
 
 def eprint(*args: object) -> None:
     print(*args, file=sys.stderr)
@@ -71,13 +79,17 @@ def warning(*args: object) -> None:
 
 def collect_result_stats(
     root: Path,
-    batches: Iterable[str],
+    sample_batches: Dict[str, List[Path]],
     min_length: int,
     sample_bams: int = -1,
     sample_name: str = "unknown sample",
 ) -> BAMStats:
-    stats = BAMStats()
-    batches = frozenset(batches)
+    stats = BAMStats(
+        total_batches=len(sample_batches),
+        total_batches_size=collect_batch_sizes(sample_batches),
+    )
+
+    batches = frozenset(sample_batches)
     if not root.exists():
         return stats
 
@@ -99,12 +111,13 @@ def collect_result_stats(
         available_batches = random.sample(available_batches, k=sample_bams)
 
     for idx, filepath in enumerate(sorted(available_batches), start=1):
-        with pysam.AlignmentFile(str(filepath), threads=4) as handle:
+        with pysam.AlignmentFile(str(filepath), threads=6) as handle:
             if not stats.genome_size:
                 stats.genome_size = sum(handle.lengths)
 
             cigars = [0] * 9
             desc = f"{sample_name} [{idx}/{len(available_batches)}]"
+
             for record in tqdm(handle, desc=desc, unit_scale=True):
                 # Skip supplementary and alternative alignments
                 if record.flag & 0x900:
@@ -132,16 +145,16 @@ def collect_result_stats(
     return stats
 
 
-def collect_batch_sizes(batches: Dict[str, List[Path]]) -> Dict[str, int]:
-    sizes: Dict[str, int] = {}
-    for key, filepaths in batches.items():
+def collect_batch_sizes(batches: Dict[str, List[Path]]) -> int:
+    total = 0
+    for filepaths in batches.values():
         raw_size = 0
         for it in filepaths:
             raw_size += it.stat().st_size
 
-        sizes[key] = raw_size
+        total += raw_size
 
-    return sizes
+    return total
 
 
 T = TypeVar("T")
@@ -200,6 +213,42 @@ def collect_batches(
     return samples
 
 
+def print_stats(*, sample_name: str, stats: BAMStats) -> None:
+    est_stats = stats.estimate(stats.total_batches)
+
+    def _fmt(n: int) -> Tuple[str, str]:
+        return (
+            f"{n / 1e9:.1f}",
+            f"{(n * 100) / est_stats.total_query_length:.1f}"
+            if est_stats.total_query_length
+            else "NA",
+        )
+
+    print(
+        sample_name,
+        stats.total_batches_size,
+        stats.total_batches,
+        stats.completed_batches,
+        f"{(100 * stats.completed_batches) / stats.total_batches:.1f}",
+        stats.sampled_batches,
+        f"{est_stats.bases_mapped / stats.genome_size:.1f}"
+        if stats.genome_size
+        else "NA",
+        f"{est_stats.total_query_length / stats.genome_size:.1f}"
+        if stats.genome_size
+        else "NA",
+        est_stats.short_reads_excluded,
+        est_stats.unmapped_reads_excluded,
+        est_stats.long_reads_included,
+        f"{est_stats.total_query_length / 1e9:.1f}",
+        *_fmt(est_stats.bases_mapped),
+        *_fmt(est_stats.bases_deleted),
+        *_fmt(est_stats.bases_inserted),
+        *_fmt(est_stats.bases_clipped),
+        sep="\t",
+    )
+
+
 class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         kwargs.setdefault("width", 79)
@@ -233,8 +282,9 @@ def main(argv: List[str]) -> int:
         "Sample",
         "RawSize",
         "Batches",
+        "BatchesDone",
         "BatchesDonePct",
-        "BatchesSamples",
+        "SampledBAMs",
         "EstCoverage",
         "MaxCoverage",
         "ShortReadsExcluded",
@@ -252,50 +302,23 @@ def main(argv: List[str]) -> int:
         sep="\t",
     )
 
+    totals = BAMStats()
     for sample_name, sample_batches in sorted(batches.items()):
         eprint("processing batches for", sample_name)
         results_root = args.results_root / args.batch / f"{sample_name}.cache"
-        batch_sizes = collect_batch_sizes(sample_batches)
 
         stats = collect_result_stats(
             root=results_root,
-            batches=sample_batches,
+            sample_batches=sample_batches,
             min_length=args.min_length,
             sample_bams=args.sample_bams,
             sample_name=sample_name,
         )
-        est_stats = stats.estimate(len(sample_batches))
 
-        def _fmt(n: int) -> Tuple[str, str]:
-            return (
-                f"{n / 1e9:.1f}",
-                f"{(n * 100) / est_stats.total_query_length:.1f}"
-                if est_stats.total_query_length
-                else "NA",
-            )
+        totals.add(stats)
+        print_stats(sample_name=sample_name, stats=stats)
 
-        print(
-            sample_name,
-            sum(batch_sizes.values()),
-            len(sample_batches),
-            f"{(100 * stats.completed_batches) / len(sample_batches):.1f}",
-            stats.sampled_batches,
-            f"{est_stats.bases_mapped / stats.genome_size:.1f}"
-            if stats.genome_size
-            else "NA",
-            f"{est_stats.total_query_length / stats.genome_size:.1f}"
-            if stats.genome_size
-            else "NA",
-            est_stats.short_reads_excluded,
-            est_stats.unmapped_reads_excluded,
-            est_stats.long_reads_included,
-            f"{est_stats.total_query_length / 1e9:.1f}",
-            *_fmt(est_stats.bases_mapped),
-            *_fmt(est_stats.bases_deleted),
-            *_fmt(est_stats.bases_inserted),
-            *_fmt(est_stats.bases_clipped),
-            sep="\t",
-        )
+    print_stats(sample_name="TOTALS", stats=totals)
 
     return 0
 
