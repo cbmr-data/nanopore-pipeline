@@ -63,6 +63,20 @@ def _collect_fast5s(source, groups=None):
     return groups.values()
 
 
+def _hash_source_files(source, filenames):
+    # Exclude the source folder from the hashed paths, to prevent global
+    # changes in folder structure (e.g. Esrum v. Computerome) from
+    # causing files to be re-run.
+    result = []
+    for filename in filenames:
+        filepath = Path(filename)
+        assert filepath.is_relative_to(source)
+
+        result.append(str(filepath.relative_to(source)))
+
+    return sha256(result)
+
+
 def _collect_samples(destination, source, batch_size=25):
     samples = {}
     for it in sorted(Path(source).iterdir()):
@@ -72,10 +86,10 @@ def _collect_samples(destination, source, batch_size=25):
             group.sort()  # Ensure stable batches even filesystem order changes
 
             if batch_size is None:
-                sample[sha256(group)] = group
+                sample[_hash_source_files(source, group)] = group
             else:
                 for batch in fragment(batch_size, group):
-                    sample[sha256(batch)] = batch
+                    sample[_hash_source_files(source, batch)] = batch
 
     return samples
 
