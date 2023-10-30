@@ -333,9 +333,11 @@ rule fastqc_fastq:
     params:
         outdir=os.path.join(RESULTS_DIR, "statistics", "premap"),
         sample=config["qc_sample"],
+    threads: 4
     envmodules:
         "perl/5.26.3",
         "openjdk/20.0.0",
+        # FIXME: Update to 0.12.1 or later
         "fastqc/0.11.9", # requies perl and openjdk
         "seqtk/1.4",
     shell:
