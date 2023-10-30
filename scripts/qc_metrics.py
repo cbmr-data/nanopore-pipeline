@@ -177,8 +177,13 @@ def collect_detailed_stats(
             query = "-" if qpos is None else query_sequence[qpos]
             alignment_counts[f"{ref}/{query}"] += 1
 
+        alignment = stats["alignment"]
         for key, count in alignment_counts.items():
-            stats["alignment"][key] += count
+            try:
+                alignment[key] += count
+            except KeyError:
+                pass # Skip special reference bases like W
+                
 
         # Percent mapped (excludes indels and clipping, etc.)
         frac_mapped = int(round(cigar_sums["M"] * 100 / query_length))
