@@ -10,8 +10,17 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import (Any, Dict, Iterable, Iterator, List, NoReturn, Optional,
-                    Sequence, Tuple, TypeVar)
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    NoReturn,
+    Optional,
+    Tuple,
+    TypeVar,
+)
 
 import pysam
 from tqdm import tqdm
@@ -79,9 +88,11 @@ def warning(*args: object) -> None:
 
 def collect_result_stats(
     root: Path,
+    *,
     sample_batches: Dict[str, List[Path]],
     min_length: int,
     sample_bams: int = -1,
+    sample_full_bams: bool = False,
     sample_name: str = "unknown sample",
 ) -> BAMStats:
     stats = BAMStats(
@@ -109,6 +120,14 @@ def collect_result_stats(
 
     if 0 <= sample_bams < len(available_batches):
         available_batches = random.sample(available_batches, k=sample_bams)
+
+    used_full_bams = False
+    if not available_batches and sample_full_bams:
+        for suffix in (".pass.bam", ".fail.bam"):
+            filepath = root.with_suffix(suffix)
+            if filepath.exists():
+                available_batches.append(filepath)
+                used_full_bams = True
 
     for idx, filepath in enumerate(sorted(available_batches), start=1):
         with pysam.AlignmentFile(str(filepath), threads=6) as handle:
@@ -142,6 +161,9 @@ def collect_result_stats(
             stats.bases_clipped += cigars[4] + cigars[5]
             stats.sampled_batches += 1
 
+    if used_full_bams:
+        stats.sampled_batches = stats.total_batches
+
     return stats
 
 
@@ -160,7 +182,7 @@ def collect_batch_sizes(batches: Dict[str, List[Path]]) -> int:
 T = TypeVar("T")
 
 
-def fragment(size: int, items: Sequence[T]) -> Iterator[Sequence[T]]:
+def fragment(size: int, items: list[T]) -> Iterator[list[T]]:
     """Faster alternative to grouper for lists/strings."""
     return (items[i : i + size] for i in range(0, len(items), size))
 
@@ -171,6 +193,19 @@ def sha256(items: Iterable[Path]) -> str:
     for it in items:
         hasher.update(str(it).encode("utf-8"))
     return hasher.hexdigest()
+
+
+def _hash_source_files(source: str, filepaths: Iterable[Path]) -> str:
+    # Exclude the source folder from the hashed paths, to prevent global
+    # changes in folder structure (e.g. Esrum v. Computerome) from
+    # causing files to be re-run.
+    result: list[Path] = []
+    for filepath in filepaths:
+        assert filepath.is_relative_to(source)
+
+        result.append(filepath.relative_to(source))
+
+    return sha256(result)
 
 
 def _collect_fast5s(
@@ -196,7 +231,7 @@ def _collect_fast5s(
 
 def collect_batches(
     source: str,
-    batch_size: int = 25,
+    batch_size: int = 90,
 ) -> Dict[str, Dict[str, List[Path]]]:
     samples: Dict[str, Dict[str, List[Path]]] = {}
 
@@ -208,7 +243,7 @@ def collect_batches(
                 group.sort()  # Ensure stable batches even filesystem order changes
 
                 for batch in fragment(batch_size, group):
-                    sample[sha256(batch)] = batch
+                    sample[_hash_source_files(source, batch)] = batch
 
     return samples
 
@@ -264,6 +299,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--min-length", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=90)
     parser.add_argument("--sample-bams", type=int, default=1)
+    parser.add_argument("--sample-full-bams", action="store_true")
 
     return parser.parse_args(argv)
 
@@ -312,6 +348,7 @@ def main(argv: List[str]) -> int:
             sample_batches=sample_batches,
             min_length=args.min_length,
             sample_bams=args.sample_bams,
+            sample_full_bams=args.sample_full_bams,
             sample_name=sample_name,
         )
 
