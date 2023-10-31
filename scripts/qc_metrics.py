@@ -1,44 +1,127 @@
 #!/usr/bin/env python3
-# -*- coding: utf8 -*-
-# pyright: strict
-import argparse
+from __future__ import annotations
+
+import dataclasses
 import json
 import os
 import random
 import sys
 from collections import Counter, defaultdict
-from itertools import product
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Dict, Tuple, Optional, Iterable, TypeVar
-from typing_extensions import TypedDict
+from typing import Any, Dict, Iterable, List, NoReturn, Optional, TypedDict, TypeVar
 
 import pysam
-
-QueryLens = TypedDict(
-    "QueryLens",
-    {
-        "mapped": Dict[int, int],
-        "unmapped": Dict[int, int],
-        "supplementary": Dict[int, int],
-        "secondary": Dict[int, int],
-    },
-)
-
-Statistics = TypedDict(
-    "Statistics",
-    {
-        "query_len": QueryLens,
-        "mapq": Dict[Optional[int], int],
-        "qs": Dict[int, int],
-        "n": Dict[int, int],
-        "cigar": Dict[str, Dict[int, int]],
-        "alignment": Dict[str, int],
-        "pct_mapped": Dict[int, int],
-        "pct_mapped_mm": Dict[int, int],
-    },
-)
+import typed_argparse as tap
 
 T = TypeVar("T")
+
+
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, o: object) -> object:
+        if dataclasses.is_dataclass(o):
+            return CustomJSONEncoder._as_dict(o)
+        return super().default(o)
+
+    @staticmethod
+    def _as_dict(obj: object) -> object:
+        if not dataclasses.is_dataclass(obj):
+            return obj
+
+        return {
+            field.name: CustomJSONEncoder._as_dict(getattr(obj, field.name))
+            for field in dataclasses.fields(obj)
+        }
+
+
+class SAMFlags:
+    paired = 0x0001  # the read is paired in sequencing
+    proper_pair = 0x0002  # the read is mapped in a proper pair
+    unmapped = 0x0004  # the query sequence itself is unmapped
+    mate_unmapped = 0x0008  # the mate is unmapped
+    reverse = 0x0010  # strand of the query (1 for reverse)
+    mate_reverse = 0x0020  # strand of the mate
+    first_in_pair = 0x0040  # the read is the first read in a pair
+    second_in_pair = 0x0080  # the read is the second read in a pair
+    secondary = 0x0100  # the alignment is not primary
+    qc_failed = 0x0200  # QC failure
+    duplicate = 0x0400  # optical or PCR duplicate
+    supplementary = 0x0800  # supplementary alignment
+
+
+@dataclass
+class MetaData:
+    name: str
+
+    sample_size: int
+    min_query_length: int
+    min_qscore: int
+    exclude_flags: int
+    base_composition_length: int
+
+    filenames: list[str]
+
+
+@dataclass
+class BasicStatistics:
+    reads: int = 0
+    filtered_flags: int = 0
+    filtered_length: int = 0
+    filtered_length_bp: int = 0
+    filtered_qscore: int = 0
+    filtered_qscore_bp: int = 0
+    kept_mapped_reads: int = 0
+    kept_unmapped_reads: int = 0
+
+
+def _cigar_counts() -> Dict[str, Counter[int]]:
+    return defaultdict(Counter)
+
+
+@dataclass
+class Histograms:
+    query_lengths: Counter[int] = field(default_factory=Counter)
+    qscore_counts: Counter[int] = field(default_factory=Counter)
+    mapq_counts: Counter[int] = field(default_factory=Counter)
+    cigar_counts: Dict[str, Counter[int]] = field(default_factory=_cigar_counts)
+    mapped_pct: list[int] = field(default_factory=lambda: [0] * 101)
+    clipped_pct: list[int] = field(default_factory=lambda: [0] * 101)
+    inserted_pct: list[int] = field(default_factory=lambda: [0] * 101)
+    deleted_pct: list[int] = field(default_factory=lambda: [0] * 101)
+
+
+class ACGTCounts(TypedDict):
+    A: list[int]
+    C: list[int]
+    G: list[int]
+    T: list[int]
+
+
+def new_acgt_dict(length: int) -> ACGTCounts:
+    return ACGTCounts(
+        A=[0] * length,
+        C=[0] * length,
+        G=[0] * length,
+        T=[0] * length,
+    )
+
+
+@dataclass
+class BaseComposition:
+    head: ACGTCounts
+    tail: ACGTCounts
+
+
+@dataclass
+class Statistics:
+    metadata: MetaData
+    compositions: BaseComposition
+    basics: BasicStatistics = field(default_factory=BasicStatistics)
+    histograms: Histograms = field(default_factory=Histograms)
+    mismatches: Counter[str] = field(default_factory=Counter)
+
+
+########################################################################################
 
 
 def progress(iterable: Iterable[T], desc: Optional[str] = None) -> Iterable[T]:
@@ -76,36 +159,91 @@ class ReservoirSample:
         self._index += 1
 
 
-def new_sample() -> Statistics:
-    return {
-        "query_len": {
-            "mapped": Counter(),
-            "unmapped": Counter(),
-            "supplementary": Counter(),
-            "secondary": Counter(),
-        },
-        "mapq": Counter(),
-        "qs": Counter(),
-        "n": Counter(),
-        "cigar": {key: Counter() for key in "MIDNSHP"},
-        "alignment": {
-            f"{key1}/{key2}": 0
-            for (key1, key2) in product("NACGT-", repeat=2)
-            if key1 != "-" or key2 != "-"
-        },
-        "pct_mapped": Counter(),
-        "pct_mapped_mm": Counter(),
-    }
+########################################################################################
 
 
-def flatten_counts(value: Any) -> Any:
-    if isinstance(value, Counter):
-        if all(isinstance(key, int) for key in value):
-            return {"x": list(value), "n": list(value.values())}
-    elif isinstance(value, dict):
-        return {key: flatten_counts(value) for key, value in value.items()}
-    else:
-        return value
+class StatsArgs(tap.TypedArgs):
+    files: List[Path] = tap.arg(
+        positional=True,
+        help="One or more JSON files generated by the 'stats' command",
+    )
+
+    threads: int = tap.arg(
+        default=8,
+        help="Number of threads for BAM decompression",
+    )
+    sample_size: int = tap.arg(
+        default=1_000_000,
+        help="Number of reads sampled for detailed statistics; basic statistics are "
+        "collected using all reads",
+    )
+    min_query_length: int = tap.arg(
+        default=500,
+        help="Exclude reads with a query-length shorter than this number of base-pairs",
+    )
+    min_qscore: int = tap.arg(
+        default=10,
+        help="Minimum average base quality score (QS tag)",
+    )
+    exclude_flags: int = tap.arg(
+        default=SAMFlags.secondary
+        | SAMFlags.qc_failed
+        | SAMFlags.duplicate
+        | SAMFlags.supplementary,
+        help="Minimum average base quality score (QS tag)",
+    )
+    base_composition_length: int = tap.arg(
+        default=100,
+        help="Collect base composition for the first/last N base-pairs",
+    )
+
+
+def main_stats(args: StatsArgs) -> NoReturn:
+    samples: Dict[str, List[Path]] = defaultdict(list)
+    for filename in args.files:
+        sample, _ = Path(filename).stem.split(".", 1)
+        samples[sample].append(filename)
+
+    sample_stats: list[Statistics] = []
+    for sample, filenames in samples.items():
+        stats = Statistics(
+            metadata=MetaData(
+                name=sample,
+                sample_size=args.sample_size,
+                min_query_length=args.min_query_length,
+                min_qscore=args.min_qscore,
+                exclude_flags=args.exclude_flags,
+                base_composition_length=args.base_composition_length,
+                filenames=[str(it) for it in filenames],
+            ),
+            compositions=BaseComposition(
+                head=new_acgt_dict(args.base_composition_length),
+                tail=new_acgt_dict(args.base_composition_length),
+            ),
+        )
+
+        subsample = ReservoirSample(args.sample_size)
+        for filename in filenames:
+            collect_basic_stats(
+                sample=sample,
+                stats=stats,
+                subsample=subsample,
+                filename=filename,
+                args=args,
+            )
+
+        collect_detailed_stats(
+            sample=sample,
+            stats=stats,
+            subsample=subsample,
+            args=args,
+        )
+
+        sample_stats.append(stats)
+
+    json.dump(sample_stats, sys.stdout, cls=CustomJSONEncoder)
+
+    sys.exit(0)
 
 
 def collect_basic_stats(
@@ -113,37 +251,35 @@ def collect_basic_stats(
     stats: Statistics,
     subsample: ReservoirSample,
     filename: Path,
-    nthreads: int = 4,
+    args: StatsArgs,
 ) -> None:
-    with pysam.AlignmentFile(os.fspath(filename), threads=nthreads) as handle:
+    with pysam.AlignmentFile(os.fspath(filename), threads=args.threads) as handle:
         for record in progress(handle, desc=f"{sample} [{filename}]"):
-            alignment_type = "mapped"
-            if record.is_unmapped:
-                alignment_type = "unmapped"
-            elif record.is_supplementary:
-                alignment_type = "supplementary"
-            elif record.is_secondary:
-                alignment_type = "secondary"
-
-            # Query lengths
-            stats["query_len"][alignment_type][record.query_length] += 1
-
-            # Alternative/etc. alignments are ignored for the remaining statistics
-            if record.is_supplementary or record.is_secondary:
+            stats.basics.reads += 1
+            if record.flag & args.exclude_flags:
+                stats.basics.filtered_flags += 1
                 continue
 
-            # Mean phred encoded base error probability
-            mapq = None if record.is_unmapped else record.mapping_quality
-            stats["mapq"][mapq] += 1
+            stats.histograms.query_lengths[record.query_length] += 1
+            if record.query_length < args.min_query_length:
+                stats.basics.filtered_length += 1
+                stats.basics.filtered_length_bp += record.query_length
+                continue
 
             mean_quality_score: int = record.get_tag("qs")  # type: ignore
-            stats["qs"][mean_quality_score] += 1
-
-            # Number of uncalled bases in the query
-            stats["n"][record.query_sequence.count("N")] += 1
+            stats.histograms.qscore_counts[mean_quality_score] += 1
+            if mean_quality_score < args.min_qscore:
+                stats.basics.filtered_qscore += 1
+                stats.basics.filtered_qscore_bp += record.query_length
+                continue
 
             # matches, mismatches, etc.
-            if not record.is_unmapped:
+            if record.is_unmapped:
+                stats.basics.kept_unmapped_reads += 1
+            else:
+                stats.basics.kept_mapped_reads += 1
+                stats.histograms.mapq_counts[record.mapping_quality] += 1
+
                 subsample.add(record)
 
 
@@ -151,83 +287,69 @@ def collect_detailed_stats(
     sample: str,
     stats: Statistics,
     subsample: ReservoirSample,
+    args: StatsArgs,
 ) -> None:
     for record in progress(subsample.items, desc=sample):
         query_sequence = record.query_sequence
         assert query_sequence is not None
 
         # Cigar string elements
-        assert record.cigartuples is not None
+        cigar_tuples: list[tuple[int, int]] | None = record.cigartuples
+        assert cigar_tuples is not None
 
         cigar_sums: Dict[str, int] = Counter()
-        cigar_counts: Dict[Tuple[int, int], int] = Counter(record.cigartuples)
+        cigar_counts = Counter(cigar_tuples)
         for (op, length), count in cigar_counts.items():
             # The ops are 'MIDNSHP=X' but we merge match (=)/mismatch (X) into M
             op = "MIDNSHPMM"[op]
             cigar_sums[op] += length * count
-            stats["cigar"][op][length] += count
+            stats.histograms.cigar_counts[op][length] += count
 
-        query_sequence = record.query_sequence
-        assert query_sequence is not None, record.query_name
-        query_length = len(query_sequence)
+        def _increment_pct(pct: list[int], key: str, length: int) -> None:
+            value = round(cigar_sums[key] * 100 / length)
+            assert value < len(pct), (value, key, length, cigar_sums)
 
-        alignment_counts: Dict[Any, int] = Counter()
+            pct[value] += 1
+
+        query_length: int = record.query_length
+        # All indels are included, so that the lenght represents the full alignment
+        alignment_length: int = sum(cigar_sums[key] for key in "MIDS")
+
+        _increment_pct(stats.histograms.mapped_pct, "M", query_length)
+        _increment_pct(stats.histograms.clipped_pct, "C", query_length)
+        _increment_pct(stats.histograms.inserted_pct, "I", alignment_length)
+        _increment_pct(stats.histograms.deleted_pct, "D", alignment_length)
+
+        if len(query_sequence) >= 2 * args.base_composition_length:
+            head = stats.compositions.head
+            for idx, nuc in enumerate(query_sequence[: args.base_composition_length]):
+                if nuc in "ACGT":
+                    head[nuc][idx] += 1
+
+            tail = stats.compositions.tail
+            for idx, nuc in enumerate(query_sequence[-args.base_composition_length :]):
+                if nuc in "ACGT":
+                    tail[nuc][idx] += 1
+
+        mismatches = stats.mismatches
         for qpos, _, ref in record.get_aligned_pairs(with_seq=True):  # type: ignore
             ref = "-" if ref is None else ref.upper()
             query = "-" if qpos is None else query_sequence[qpos]
-            alignment_counts[f"{ref}/{query}"] += 1
-
-        alignment = stats["alignment"]
-        for key, count in alignment_counts.items():
-            try:
-                alignment[key] += count
-            except KeyError:
-                pass # Skip special reference bases like W
-                
-
-        # Percent mapped (excludes indels and clipping, etc.)
-        frac_mapped = int(round(cigar_sums["M"] * 100 / query_length))
-        stats["pct_mapped"][frac_mapped] += 1
-
-        # Percent mapped bases that are mismatches to reference
-        # The NM tag as calculated by `samtools calmd` counts indels as mismatches:
-        # https://github.com/samtools/samtools/blob/75a780628e8b7a4e69bd3b2112979f635ed82320/bam_md.c#L92
-        n_mismatches: int = record.get_tag("NM") - cigar_sums["D"] - cigar_sums["I"]  # type: ignore
-        pct_mismatches = int(round(n_mismatches * 100 / cigar_sums["M"]))
-        stats["pct_mapped_mm"][pct_mismatches] += 1
+            if ref in "ACGT-" and query in "ACGT-":
+                mismatches[f"{ref}/{query}"] += 1
 
 
-def main_stats(args: argparse.Namespace) -> int:
-    samples: Dict[str, List[Path]] = defaultdict(list)
-    for filename in args.files:
-        sample, _ = Path(filename).stem.split(".", 1)
-        samples[sample].append(filename)
-
-    stats: Dict[str, Statistics] = {}
-    for sample, filenames in samples.items():
-        sample_stats = stats[sample] = new_sample()
-        subsample = ReservoirSample(args.nsample)
-        for filename in filenames:
-            collect_basic_stats(
-                sample=sample,
-                stats=sample_stats,
-                subsample=subsample,
-                filename=filename,
-                nthreads=args.nthreads,
-            )
-
-        collect_detailed_stats(
-            sample=sample,
-            stats=sample_stats,
-            subsample=subsample,
-        )
-
-    json.dump(flatten_counts(stats), sys.stdout)
-
-    return 0
+########################################################################################
 
 
-def main_join(args: argparse.Namespace) -> int:
+class JoinArgs(tap.TypedArgs):
+    files: List[Path] = tap.arg(
+        positional=True,
+        help="One or more JSON files generated by the 'stats' command",
+    )
+
+
+def main_join(args: JoinArgs) -> NoReturn:
     stats = {}
     for filename in args.files:
         with filename.open() as handle:
@@ -238,40 +360,17 @@ def main_join(args: argparse.Namespace) -> int:
 
     json.dump(stats, sys.stdout)
 
-    return 0
+    sys.exit(0)
 
 
-class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        kwargs.setdefault("width", 79)
-
-        super().__init__(*args, **kwargs)
-
-
-def parse_args(argv: List[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(formatter_class=HelpFormatter)
-    parser.set_defaults(main=lambda _: parser.print_usage())
-
-    subparsers = parser.add_subparsers(title="command")
-
-    stats = subparsers.add_parser("stats")
-    stats.set_defaults(main=main_stats)
-    stats.add_argument("files", nargs="+", type=Path)
-    stats.add_argument("--nthreads", default=4, type=int)
-    stats.add_argument("--nsample", default=1_000_000, type=int)
-
-    join = subparsers.add_parser("join")
-    join.set_defaults(main=main_join)
-    join.add_argument("files", nargs="+", type=Path)
-
-    return parser.parse_args(argv)
-
-
-def main(argv: List[str]) -> int:
-    args = parse_args(argv)
-
-    return args.main(args)
+def main(argv: List[str]) -> None:
+    tap.Parser(
+        tap.SubParserGroup(
+            tap.SubParser("stats", StatsArgs),
+            tap.SubParser("join", JoinArgs),
+        ),
+    ).bind(main_stats, main_join,).run(argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    main(sys.argv[1:])
