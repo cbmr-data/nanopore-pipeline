@@ -64,6 +64,8 @@ def generate_report(args: Args) -> None:
 
     plot_indel_lengths(report, samples)
 
+    plot_base_composition(report, samples)
+
     print(report.render())
 
 
@@ -466,16 +468,6 @@ def create_length_plot(
         .add_params(nearest)
     )
 
-    # Draw points on the line, and highlight based on selection
-    points = bars.mark_point().encode(
-        opacity=alt.condition(
-            nearest,
-            alt.value(1),
-            alt.value(0),
-        ),
-        color=alt.value("white"),
-    )
-
     text = bars.mark_text(align="left", dx=10, dy=-10, fontSize=14).encode(
         text=alt.condition(nearest, "length:Q", alt.value(" ")),
     )
@@ -488,7 +480,7 @@ def create_length_plot(
     )
 
     return (
-        alt.layer(bars, selectors, points, text, ruler)
+        alt.layer(bars, selectors, text, ruler)
         .properties(width=525, height=100)
         .facet(facet="sample:N", columns=2)
         # Repeat x-axis
@@ -760,6 +752,111 @@ def plot_indel_lengths(
             ],
         )
     )
+
+
+########################################################################################
+
+
+def plot_base_composition(
+    doc: simplereport.report,
+    samples: list[Statistics],
+) -> None:
+    alt.data_transformers.disable_max_rows()
+
+    dataframes: list[pd.DataFrame] = []
+    for it in samples:
+        for key, counts in (
+            ("head", it.compositions.head),
+            ("tail", it.compositions.tail),
+        ):
+            totals = [
+                sum(row)
+                for row in zip(counts["A"], counts["C"], counts["G"], counts["T"])
+            ]
+            for group in ("A", "C", "G", "T"):
+                data = pd.DataFrame(
+                    {
+                        "sample": f"{it.metadata.name} ({key})",
+                        "group": group,
+                        "position": range(it.metadata.base_composition_length),
+                        "frequency": [
+                            round(value / totals[idx], 3)
+                            for idx, value in enumerate(counts[group])
+                        ],
+                    }
+                )
+
+                dataframes.append(data)
+
+    data = pd.concat(dataframes)
+    # toggle based on legend selection
+    selection = alt.selection_point(fields=["group"], bind="legend")
+
+    bars = (
+        alt.Chart(data)
+        .mark_line(interpolate="step-after")
+        .encode(
+            x=alt.X("position:Q").title(None),
+            y=alt.Y("frequency:Q"),
+            color=alt.Color(
+                "group",
+                scale=alt.Scale(domain=list("ACGT")),
+                legend=alt.Legend(
+                    title=None,
+                    orient="none",
+                    legendX=350,
+                    legendY=-60,
+                    direction="horizontal",
+                    titleAnchor="middle",
+                ),
+            ),
+            opacity=alt.condition(selection, alt.value(1), alt.value(0.1)),
+        )
+        .add_params(
+            selection,
+        )
+    )
+
+    # Select the nearest x-value
+    nearest = alt.selection_point(
+        nearest=True,
+        on="mouseover",
+        fields=["position"],
+        empty=False,
+    )
+
+    selectors = (
+        alt.Chart(data)
+        .mark_point()
+        .encode(x="position:Q", opacity=alt.value(0))
+        .add_params(nearest)
+    )
+
+    text = bars.mark_text(align="left", dx=10, dy=-10, fontSize=14).encode(
+        text=alt.condition(nearest, "frequency:Q", alt.value(" ")),
+    )
+
+    ruler = (
+        alt.Chart(data)
+        .mark_rule(color="gray")
+        .encode(x="position:Q")
+        .transform_filter(nearest)
+    )
+
+    chart = (
+        alt.layer(bars, selectors, text, ruler)
+        .properties(width=550, height=100)
+        .facet(facet="sample:N", columns=2)
+        # Repeat x-axis
+        .resolve_axis(x="independent")
+        # Disable facet header showing column name
+        .configure_header(title=None)
+        .interactive()
+    )
+
+    section = doc.add()
+    section.set_title("Base compositon")
+    section.add_chart(chart)
 
 
 ########################################################################################

@@ -62,7 +62,7 @@ class section:
         self._paragraphs.append(
             _TEMPLATE_ALTAIR.format(
                 id=section._running_id,
-                spec=chart.to_json(),  # type: ignore
+                spec=chart.to_json(indent=0),  # type: ignore
             )
         )
 
