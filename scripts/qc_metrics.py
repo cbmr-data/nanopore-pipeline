@@ -332,7 +332,7 @@ def collect_detailed_stats(
         for (op, length), count in cigar_counts.items():
             # The ops are 'MIDNSHP=X' but we merge match (=) and mismatch (X) into M,
             # and soft (S) and hard (H) clipping into pseudo-op C.
-            op = "MIDNCCPMM"[op]
+            op = "MIDNSHPMM"[op]
             cigar_sums[op] += length * count
             stats.mapped.cigar_counts[op][length] += count
 
@@ -347,7 +347,7 @@ def collect_detailed_stats(
         alignment_length: int = sum(cigar_sums[key] for key in "MIDS")
 
         _increment_pct(stats.mapped.mapped_pct, "M", query_length)
-        _increment_pct(stats.mapped.clipped_pct, "C", query_length)
+        _increment_pct(stats.mapped.clipped_pct, "S", query_length)
         _increment_pct(stats.mapped.inserted_pct, "I", alignment_length)
         _increment_pct(stats.mapped.deleted_pct, "D", alignment_length)
 

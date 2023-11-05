@@ -8,17 +8,28 @@ import pandas as pd
 from typing_extensions import Literal
 
 
+class unspecified:
+    pass
+
+
 class cell:
     def __init__(
         self,
         value: None | int | float | str,
         *,
+        sort_data: unspecified | int | float | str | None = unspecified(),
         shading: float | Literal["DYNAMIC"] = 0,
     ) -> None:
         self.value = value
         self.shading = (
             max(0, round(shading, 3)) if isinstance(shading, float) else shading
         )
+
+        self.sort_data = sort_data
+
+    @property
+    def has_sort_data(self) -> bool:
+        return not isinstance(self.sort_data, unspecified)
 
     def __str__(self) -> str:
         return str(self.value)
@@ -69,7 +80,7 @@ class section:
         lines: List[str] = []
         add = lines.append
 
-        add('      <table class="pure-table io-table pure-table-striped">')
+        add('      <table class="sortable pure-table io-table pure-table-striped">')
         if columns:
             add("        <thead>")
             add("          <tr>")
@@ -82,18 +93,21 @@ class section:
             add("          <tr>")
 
             for colidx, value in enumerate(row):
-                style = ""
+                attrs = ""
                 if (
                     isinstance(value, cell)
                     and isinstance(value.shading, float)
                     and value.shading > 0
                 ):
                     pct = round(100 * value.shading, 1)
-                    style = f" class='percent' style='background-size: {pct}% 100%'"
+                    attrs = f" class='percent' style='background-size: {pct}% 100%'"
                 elif value is None:
                     value = ""
 
-                add(f"            <td{style}>{value}</td>")
+                if isinstance(value, cell) and value.has_sort_data:
+                    attrs = f'{attrs} data-sort="{value.sort_data}" '
+
+                add(f"            <td{attrs}>{value}</td>")
             add("          </tr>")
         add("        </tbody>")
         add("      </table>")
@@ -198,13 +212,22 @@ _TEMPLATE_DOC = """
     src="https://unpkg.com/vega-embed@6.20.2/build/vega-embed.min.js"
     integrity="sha384-oP1rwLY7weRZ5jvAVzfnJsAn+sYA69rQC4geH82Y9oMvr8ruA1oeE9Jkft2noCHR"
     crossorigin="anonymous"></script>
+   <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/gh/tofsjonas/sortable@3.0.0/sortable-base.min.css"
+    integrity="sha384-RMPvgKdhV7JWj5RH7yq5bQgwAt02lpUEAdzaUPj4RLA9BdifNNiI1gtIobFLfeuO"
+    crossorigin="anonymous">
+   <script
+    src="https://cdn.jsdelivr.net/gh/tofsjonas/sortable@latest/sortable.min.js"
+    integrity="sha384-Ui7TCZUUp8xuvYhwek30kUmzgl+cbbS0TWhUdE7J3/dF/O7kuF0wd6ZlLZ3KhLVn"
+    crossorigin="anonymous"></script>
     <style type='text/css'>
       body {
         background-color: #E3E2DE;
       }
 
       div#layout {
-          max-width: 1200px;
+          max-width: 1280px;
           margin-left: auto;
           margin-right: auto;
           font-size: smaller;

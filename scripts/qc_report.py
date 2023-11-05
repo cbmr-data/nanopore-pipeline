@@ -6,7 +6,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Literal
 
 import altair as alt
 import pandas as pd
@@ -61,6 +61,8 @@ def generate_report(args: Args) -> None:
     plot_query_lengths(report, samples)
     plot_cigar_percentages(report, samples)
     plot_overall_mismatch_rates(report, samples)
+
+    plot_indel_lengths(report, samples)
 
     print(report.render())
 
@@ -133,12 +135,18 @@ def mean(counts: list[int]) -> float:
 
 
 class bp_cell(cell):
+    def __init__(self, value: int, *, shading: float | Literal["DYNAMIC"] = 0) -> None:
+        super().__init__(value, sort_data=value, shading=shading)
+
     def __str__(self) -> str:
         assert isinstance(self.value, int), self.value
         return f"{self.value / 1e9:.2f}"
 
 
 class count_cell(cell):
+    def __init__(self, value: int, *, shading: float | Literal["DYNAMIC"] = 0) -> None:
+        super().__init__(value, sort_data=value, shading=shading)
+
     def __str__(self) -> str:
         assert isinstance(self.value, int), self.value
         return f"{self.value:,}"
@@ -326,14 +334,14 @@ def add_mapping_table(doc: simplereport.report, samples: list[Statistics]) -> No
         [
             sample.metadata.name,
             count_cell(it.query_reads, shading="DYNAMIC"),
-            "",
+            None,
             count_cell(it.unmapped_reads),
             f"{100 * it.unmapped_reads / it.query_reads:.2f}",
             bp_cell(
                 it.unmapped_bp,
                 shading=it.unmapped_bp / max_query_gbp,
             ),
-            "",
+            None,
             count_cell(it.mapped_reads),
             cell(
                 f"{100 * it.mapped_reads / it.query_reads:.2f}",
@@ -344,12 +352,12 @@ def add_mapping_table(doc: simplereport.report, samples: list[Statistics]) -> No
                 f"{it.mapped_bp / sample.metadata.genome_size:.1f}",
                 shading=it.mapped_bp / max_query_gbp,
             ),
-            "",
+            None,
             median_of_pct(sample.mapped.mapped_pct),
             median_of_pct(sample.mapped.deleted_pct),
             median_of_pct(sample.mapped.inserted_pct),
             median_of_pct(sample.mapped.clipped_pct),
-            "",
+            None,
             cell(
                 f"{it.mismatch_rate * 100:.1f}",
                 shading=it.mismatch_rate / max(0.05, max_mismatch_rate),
@@ -378,7 +386,7 @@ def add_mapping_table(doc: simplereport.report, samples: list[Statistics]) -> No
             "M%<sup>†</sup>",
             "D%<sup>†</sup>",
             "I%<sup>†</sup>",
-            "C%<sup>†</sup>",
+            "S%<sup>†</sup>",
             "",
             "MM%<sup>‡</sup>",
         ],
@@ -390,7 +398,7 @@ def add_mapping_table(doc: simplereport.report, samples: list[Statistics]) -> No
     )
     section.add_paragraph(
         "<sup>†</sup> The median percentage of alignments consisting of a given "
-        "alignment type: [M]atch, [D]eletion, [I]nsertion, and [C]lipped."
+        "alignment type: [M]atch, [D]eletion, [I]nsertion, and [S]oft Clipped."
     )
     section.add_paragraph(
         "<sup>‡</sup> Average mismatch rate (%) for aligned (M) bases. Default scale "
@@ -401,58 +409,32 @@ def add_mapping_table(doc: simplereport.report, samples: list[Statistics]) -> No
 ########################################################################################
 
 
-def plot_query_lengths(
-    doc: simplereport.report,
-    samples: list[Statistics],
-) -> None:
-    data = pd.concat(
-        pd.DataFrame(
-            {
-                "sample": it.metadata.name,
-                "group": group,
-                "quantile": range(0, 101),
-                "length": [
-                    0,  # Near zero
-                    *(
-                        round(length)
-                        for length in quantiles_from_counts(
-                            counts.query_lengths,
-                            [x / 100 for x in range(1, 101)],
-                        )
-                    ),
-                ],
-            }
-        )
-        for it in samples
-        for (group, counts) in (
-            ("mapped", it.mapped),
-            ("unmapped", it.unmapped),
-            ("filtered (quality)", it.filtered.qscore),
-            ("filtered (length)", it.filtered.length),
-        )
-    )
-
+def create_length_plot(
+    data: pd.DataFrame,
+    groups: list[str],
+    start_x_axis_from: int = 1,
+    preselected_group: str | None = None,
+) -> alt.FacetChart:
     # toggle based on legend selection
-    selection = alt.selection_point(fields=["group"], bind="legend", value="mapped")
+    selection = alt.selection_point(
+        fields=["group"],
+        bind="legend",
+        value=preselected_group,
+    )
 
     bars = (
         alt.Chart(data)
         .mark_line(interpolate="step-after")
         .encode(
-            x=alt.X("length:Q").title(None).scale(type="log", domainMin=100),
+            x=alt.X("length:Q")
+            .title(None)
+            .scale(type="log", domainMin=start_x_axis_from),
             y=alt.Y("quantile:Q")
             .title("Quantile over bp")
             .scale(domainMin=0, domainMax=120),
             color=alt.Color(
                 "group",
-                scale=alt.Scale(
-                    domain=[
-                        "mapped",
-                        "unmapped",
-                        "filtered (quality)",
-                        "filtered (length)",
-                    ]
-                ),
+                scale=alt.Scale(domain=groups),
                 legend=alt.Legend(
                     title=None,
                     orient="none",
@@ -505,32 +487,65 @@ def plot_query_lengths(
         .transform_filter(nearest)
     )
 
-    chart = (
+    return (
         alt.layer(bars, selectors, points, text, ruler)
         .properties(width=525, height=100)
         .facet(facet="sample:N", columns=2)
         # Repeat x-axis
         .resolve_axis(x="independent")
-        .configure_header(
-            # Disable facet header showing column name
-            title=None
-        )
-        .properties(
-            # Primary figure title
-            title="Query length distributions",
-        )
-        .configure_title(
-            fontSize=20,
-            font="Courier",
-            anchor="start",
-            color="gray",
-        )
+        # Disable facet header showing column name
+        .configure_header(title=None)
         .interactive()
+    )
+
+
+def length_pct_quantiles(lengths: dict[int, int]) -> list[int]:
+    return [
+        round(length)
+        for length in quantiles_from_counts(
+            lengths,
+            [x / 100 for x in range(0, 101)],
+        )
+    ]
+
+
+def plot_query_lengths(
+    doc: simplereport.report,
+    samples: list[Statistics],
+) -> None:
+    data = pd.concat(
+        pd.DataFrame(
+            {
+                "sample": it.metadata.name,
+                "group": group,
+                "quantile": range(0, 101),
+                "length": length_pct_quantiles(counts.query_lengths),
+            }
+        )
+        for it in samples
+        for (group, counts) in (
+            ("mapped", it.mapped),
+            ("unmapped", it.unmapped),
+            ("filtered (quality)", it.filtered.qscore),
+            ("filtered (length)", it.filtered.length),
+        )
     )
 
     section = doc.add()
     section.set_title("Query lengths")
-    section.add_chart(chart)
+    section.add_chart(
+        create_length_plot(
+            data=data,
+            groups=[
+                "mapped",
+                "unmapped",
+                "filtered (quality)",
+                "filtered (length)",
+            ],
+            start_x_axis_from=100,
+            preselected_group="mapped",
+        )
+    )
 
     section.add_paragraph(
         "X axis shows the length of query sequences in bp (prior to mapping/clipping)"
@@ -639,17 +654,8 @@ def plot_cigar_percentages(
         .facet(facet="sample:N", columns=2)
         # Repeat x-axis
         .resolve_axis(x="independent")
-        .configure_header(
-            # Disable facet header showing column name
-            title=None
-        )
-        .properties(title="CIGAR content")
-        .configure_title(
-            fontSize=20,
-            font="Courier",
-            anchor="start",
-            color="gray",
-        )
+        # Disable facet header showing column name
+        .configure_header(title=None)
         .interactive()
     )
 
@@ -702,25 +708,58 @@ def plot_overall_mismatch_rates(
         )
         .properties(
             width=250,
+            height=100,
         )
         .facet(
             facet="sample:N",
             columns=4,
         )
+        # Disable facet header showing column name
+        .configure_header(title=None)
         # Repeat x-axis
         .resolve_axis(x="independent")
-        .configure_header(title=None)
-        .properties(title="Mismatch rates")
-        .configure_title(
-            fontSize=20,
-            font="Courier",
-            anchor="start",
-            color="gray",
-        )
     )
     section = doc.add()
-    section.set_title("Overall mismatch rates")
+    section.set_title("Mismatch rates")
     section.add_chart(chart)
+
+
+########################################################################################
+
+
+def plot_indel_lengths(
+    doc: simplereport.report,
+    samples: list[Statistics],
+) -> None:
+    data = pd.concat(
+        pd.DataFrame(
+            {
+                "sample": it.metadata.name,
+                "group": group,
+                "quantile": range(0, 101),
+                "length": length_pct_quantiles(it.mapped.cigar_counts[key]),
+            }
+        )
+        for it in samples
+        for (key, group) in (
+            ("I", "Insertions"),
+            ("D", "Deletions"),
+            ("S", "Soft Clipped"),
+        )
+    )
+
+    section = doc.add()
+    section.set_title("CIGAR lengths")
+    section.add_chart(
+        create_length_plot(
+            data=data,
+            groups=[
+                "Insertions",
+                "Deletions",
+                "Soft Clipped",
+            ],
+        )
+    )
 
 
 ########################################################################################
