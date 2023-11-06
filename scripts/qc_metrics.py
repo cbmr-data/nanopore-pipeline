@@ -15,7 +15,6 @@ from typing import (
     Iterable,
     NoReturn,
     Optional,
-    TypeAlias,
     TypedDict,
     TypeVar,
 )
@@ -24,6 +23,7 @@ import pysam
 import typed_argparse as tap
 from koda import Just, Maybe, nothing
 from koda_validate import IntValidator, coercer
+from typing_extensions import TypeAlias
 
 T = TypeVar("T")
 
