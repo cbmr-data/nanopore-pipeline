@@ -6,7 +6,9 @@ from pathlib import Path
 
 import snakemake.utils
 
+
 configfile: "config/config.yaml"
+
 
 snakemake.utils.validate(config, "config/config.schema.json")
 
@@ -14,6 +16,7 @@ snakemake.utils.validate(config, "config/config.schema.json")
 RESULTS_DIR = config["results_dir"]
 # Location of custom scripts
 SCRIPTS_DIR = os.path.join(workflow.basedir, "scripts")
+
 
 def abort(*args, **kwargs):
     kwargs["file"] = sys.stderr
@@ -152,6 +155,7 @@ rule dorado_symlinks:
             dst = os.path.join(output.batch, os.path.basename(filepath))
             os.symlink(src, dst)
 
+
 rule dorado_model:
     priority: 75
     group:
@@ -171,6 +175,7 @@ rule dorado_model:
         ./venv/bin/python3 scripts/select_model.py {params.models:q} {input.batch:q} > "${{DEST}}"
         mv "${{DEST}}" {output.model:q}
         """
+
 
 rule dorado:
     priority: 100
@@ -338,7 +343,7 @@ rule fastqc_fastq:
         "perl/5.26.3",
         "openjdk/20.0.0",
         # FIXME: Update to 0.12.1 or later
-        "fastqc/0.11.9", # requies perl and openjdk
+        "fastqc/0.11.9",  # requies perl and openjdk
         "seqtk/1.4",
     shell:
         """
@@ -360,7 +365,7 @@ rule fastqc_bam:
     envmodules:
         "perl/5.26.3",
         "openjdk/20.0.0",
-        "fastqc/0.11.9", # requires perl and openjdk
+        "fastqc/0.11.9",  # requires perl and openjdk
         "libdeflate/1.18",
         "samtools-libdeflate/1.18",
     shell:
@@ -425,9 +430,10 @@ rule qc_stats:
         sample=config["qc_sample"],
     shell:
         r"""
-        python3 scripts/qc_metrics.py stats --nsample {params.sample} \
-            {input:q} \
-            > {output:q}
+        python3 scripts/qc_metrics.py \
+            --nsample {params.sample} \
+            --output {output:q} \
+            {input:q}
         """
 
 
@@ -436,11 +442,7 @@ rule qc_stats_join:
         expand(f"{RESULTS_DIR}/{{sample}}.cache/metrics.json", sample=SAMPLES),
     output:
         f"{RESULTS_DIR}/statistics/metrics.json",
-    envmodules:
-        "python/3.9.16",
     shell:
         r"""
-        python3 scripts/qc_metrics.py join \
-            {input:q} \
-            > {output:q}
+        cat {input:q} > {output:q}
         """
