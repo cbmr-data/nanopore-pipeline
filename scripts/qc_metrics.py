@@ -236,6 +236,10 @@ class StatsArgs(tap.TypedArgs):
 def main_stats(args: StatsArgs) -> NoReturn:
     samples: dict[str, list[Path]] = defaultdict(list)
     for filename in args.files:
+        if filename.suffix.lower() not in (".bam", ".cram"):
+            print(f"ERROR: Not a BAM/CRAM file; aborting: {filename!r}")
+            sys.exit(1)
+
         sample, _ = Path(filename).stem.split(".", 1)
         samples[sample].append(filename)
 
