@@ -430,8 +430,8 @@ rule qc_stats:
         sample=config["qc_sample"],
     shell:
         r"""
-        python3 scripts/qc_metrics.py \
-            --nsample {params.sample} \
+        ./venv/bin/python3 scripts/qc_metrics.py \
+            --sample-size {params.sample} \
             --output {output:q} \
             {input:q}
         """
