@@ -77,7 +77,7 @@ class section:
             fmt = self._image_format
             if self._image_format == "svg":
                 fmt = "svg+xml"
-                data = vlc.vegalite_to_svg(spec)  # type: ignore
+                data = vlc.vegalite_to_svg(spec).encode()  # type: ignore
             elif self._image_format == "png":
                 data = vlc.vegalite_to_png(spec)  # type: ignore
             elif self._image_format == "jpg":
@@ -85,7 +85,7 @@ class section:
             else:
                 raise NotImplementedError(self._image_format)
 
-            data = base64.b64encode(data.encode()).decode()
+            data = base64.b64encode(data).decode()
             self._paragraphs.append(f'<img src="data:image/{fmt};base64, {data}">')
 
         if caption is not None:
