@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
 import itertools
 from typing import Any, List, Optional
 
 import altair as alt
 import pandas as pd
-from typing_extensions import Literal
+import vl_convert as vlc
+from typing_extensions import Literal, TypeAlias
+
+ImageFormat: TypeAlias = Literal["vega", "png", "jpg", "svg"]
 
 
 class unspecified:
@@ -40,9 +44,10 @@ class section:
     _paragraphs: List[str]
     _running_id: int = 0
 
-    def __init__(self) -> None:
+    def __init__(self, image_format: ImageFormat) -> None:
         self._title = None
         self._paragraphs = []
+        self._image_format = image_format
 
     def set_title(self, title: str) -> "section":
         self._title = title
@@ -58,13 +63,30 @@ class section:
         chart: alt.Chart | alt.FacetChart,
         caption: Optional[str] = None,
     ) -> "section":
-        section._running_id += 1
-        self._paragraphs.append(
-            _TEMPLATE_ALTAIR.format(
-                id=section._running_id,
-                spec=chart.to_json(indent=0),  # type: ignore
+        spec: str = chart.to_json(indent=0)
+
+        if self._image_format == "vega":
+            section._running_id += 1
+            self._paragraphs.append(
+                _TEMPLATE_ALTAIR.format(
+                    id=section._running_id,
+                    spec=spec,  # type: ignore
+                )
             )
-        )
+        else:
+            fmt = self._image_format
+            if self._image_format == "svg":
+                fmt = "svg+xml"
+                data = vlc.vegalite_to_svg(spec)  # type: ignore
+            elif self._image_format == "png":
+                data = vlc.vegalite_to_png(spec)  # type: ignore
+            elif self._image_format == "jpg":
+                data = vlc.vegalite_to_jpeg(spec)  # type: ignore
+            else:
+                raise NotImplementedError(self._image_format)
+
+            data = base64.b64encode(data.encode()).decode()
+            self._paragraphs.append(f'<img src="data:image/{fmt};base64, {data}">')
 
         if caption is not None:
             self._paragraphs.append(f"      <figcaption>{caption}</figcaption>")
@@ -74,7 +96,7 @@ class section:
     def add_table(
         self,
         rows: list[list[str | int | None | float | cell]],
-        columns: List[str],
+        columns: List[str | None],
     ) -> "section":
         self._update_shading(rows)
         lines: List[str] = []
@@ -85,14 +107,19 @@ class section:
             add("        <thead>")
             add("          <tr>")
             for name in columns:
-                add(f"            <th>{name}</th>")
+                attrs = ""
+                if name is None:
+                    name = ""
+                    attrs = ' class="no-sort"'
+
+                add(f"            <th{attrs}>{name}</th>")
             add("          </tr>")
             add("        </thead>")
         add("        <tbody>")
-        for rowidx, row in enumerate(rows):
+        for row in rows:
             add("          <tr>")
 
-            for colidx, value in enumerate(row):
+            for value in row:
                 attrs = ""
                 if (
                     isinstance(value, cell)
@@ -166,13 +193,15 @@ class section:
 class report:
     _title: str
     _sections: List[section]
+    _image_format: ImageFormat
 
-    def __init__(self, title: str) -> None:
+    def __init__(self, title: str, image_format: ImageFormat = "jpg") -> None:
         self._title = title
         self._sections = []
+        self._image_format = image_format
 
     def add(self) -> section:
-        s = section()
+        s = section(self._image_format)
         self._sections.append(s)
         return s
 

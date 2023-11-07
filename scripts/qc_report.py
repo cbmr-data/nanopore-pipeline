@@ -6,7 +6,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Literal
+from typing import Any, Iterable, Iterator, Literal, Optional
 
 import altair as alt
 import pandas as pd
@@ -15,11 +15,24 @@ import typed_argparse as tap
 from koda_validate import DataclassValidator, Invalid, ListValidator, Validator
 from koda_validate.typehints import get_typehint_validator
 from qc_metrics import Statistics
-from simplereport import cell
+from simplereport import ImageFormat, cell
 
 
 class Args(tap.TypedArgs):
-    metrics: Path = tap.arg("metrics", positional=True)
+    metrics: Path = tap.arg(positional=True)
+
+    head: Optional[int] = tap.arg(
+        help="Process only the first N records; defaults to processing every record",
+    )
+    image_format: Literal["auto", "vega", "svg", "png", "jpg"] = tap.arg(
+        help="Output format for images; if auto 'vega' will be used for 10 or fewer "
+        "samples and jpg if there are more samples",
+        default="auto",
+    )
+
+
+def eprint(*args: object):
+    print(*args, file=sys.stderr)
 
 
 def custom_resolver(annotations: Any) -> Validator[Any]:
@@ -35,8 +48,13 @@ def custom_resolver(annotations: Any) -> Validator[Any]:
 
 def generate_report(args: Args) -> None:
     try:
+        data: list[object] = []
         with args.metrics.open() as handle:
-            data = json.load(handle)
+            for line in handle:
+                if args.head is not None and len(data) >= args.head:
+                    break
+
+                data.append(json.loads(line))
     except OSError as error:
         sys.exit(f"Error reading metrics file: {error}")
 
@@ -53,12 +71,27 @@ def generate_report(args: Args) -> None:
         sys.exit(1)
 
     samples = sorted(result.val, key=lambda it: it.metadata.name)
-    report = simplereport.report("Nanopore quality metrics")
+    if args.image_format == "auto":
+        if len(samples) > 10:
+            eprint("WARNING: More than 10 samples; rendering images as static JPGs.")
+            eprint("         Use --image-format to choose output format.")
+            image_format = "jpg"
+        else:
+            image_format = "vega"
+    else:
+        image_format = args.image_format
+
+    report = simplereport.report(
+        title="Nanopore quality metrics",
+        image_format=image_format,
+    )
 
     add_sequencing_table(report, samples)
     add_mapping_table(report, samples)
 
-    plot_query_lengths(report, samples)
+    alt.data_transformers.disable_max_rows()
+
+    plot_query_lengths(report, samples, image_format=image_format)
     plot_cigar_percentages(report, samples)
     plot_overall_mismatch_rates(report, samples)
 
@@ -197,6 +230,7 @@ def add_sequencing_table(doc: simplereport.report, samples: list[Statistics]) ->
             [
                 sample.metadata.name,
                 count_cell(query_reads, shading="DYNAMIC"),
+                count_cell(median_length_raw, shading="DYNAMIC"),
                 bp_cell(query_bp, shading="DYNAMIC"),
                 f"{query_bp / sample.metadata.genome_size:.1f}",
                 None,
@@ -211,6 +245,8 @@ def add_sequencing_table(doc: simplereport.report, samples: list[Statistics]) ->
                 None,
                 count_cell(passed_reads),
                 count_cell(passed_reads - query_reads),
+                count_cell(median_length, shading="DYNAMIC"),
+                count_cell(median_length - median_length_raw),
                 bp_cell(
                     passed_bp,
                     shading=passed_bp / max_query_bp,
@@ -221,9 +257,6 @@ def add_sequencing_table(doc: simplereport.report, samples: list[Statistics]) ->
                     shading=passed_bp / max_query_bp,
                 ),
                 f"{(passed_bp - query_bp) / sample.metadata.genome_size:.1f}",
-                None,
-                count_cell(median_length),
-                count_cell(median_length - median_length_raw),
             ]
         )
     min_lengths = {f"{it.metadata.min_query_length}" for it in samples}
@@ -238,33 +271,42 @@ def add_sequencing_table(doc: simplereport.report, samples: list[Statistics]) ->
         columns=[
             "Sample",
             "Reads<sup>*</sup>",
+            "Length<sup>†</sup>",
             "Gbp",
-            "×Cov",
-            "",
-            f"Length < {min_length}",
-            f"Q < {min_qscore}",
-            "",
+            "×",
+            None,
+            "Short<sup>‡</sup>",
+            "LowQ<sup>‡</sup>",
+            None,
             "Filtered",
             "Δ",
+            "Length<sup>†</sup>",
+            "Δ",
             "Gbp",
             "Δ",
-            "×Cov",
-            "Δ",
-            "",
-            "Length<sup>†</sup>",
+            "×",
             "Δ",
         ],
     )
 
-    section.add_paragraph(
+    notes: list[str] = [
         "<sup>*</sup> This number should correspond to the number of query sequences "
         "in the input FASTQ(s), but is estimated from the BAM file by excluding "
-        "filtered reads."
-    )
-    section.add_paragraph("<sup>Δ</sup> Change in measure due to filtering.")
-    section.add_paragraph(
-        "<sup>†</sup> Median length of query sequences after filtering."
-    )
+        "supplementary/alternative alignments",
+        "<sup>†</sup> Median length of query sequences before/after filtering",
+        f"<sup>‡</sup> Quality filtering of short reads (< {min_length} bp) and reads "
+        f"with an average base Quality score less than {min_qscore}",
+    ]
+
+    if samples:
+        notes.append(
+            f"× Coverage assuming a {samples[0].metadata.genome_size / 1e9:.2f}Gbp "
+            "genome"
+        )
+
+    notes.append("Δ Change in measure due to filtering")
+
+    section.add_paragraph("; ".join(notes) + ".")
 
 
 ########################################################################################
@@ -375,37 +417,47 @@ def add_mapping_table(doc: simplereport.report, samples: list[Statistics]) -> No
         columns=[
             "Sample",
             "Query reads<sup>*</sup>",
-            "",
+            None,
             "Unmapped",
             "%",
             "Gbp",
-            "",
+            None,
             "Mapped",
             "%",
             "Gbp",
-            "×Cov",
-            "",
+            "×",
+            None,
             "M%<sup>†</sup>",
             "D%<sup>†</sup>",
             "I%<sup>†</sup>",
             "S%<sup>†</sup>",
-            "",
+            None,
             "MM%<sup>‡</sup>",
         ],
     )
 
-    section.add_paragraph(
+    notes: list[str] = [
         "<sup>*</sup> The number of length/Qscore filtered reads for which mapping was "
-        "attempted. "
-    )
-    section.add_paragraph(
+        "attempted",
+    ]
+
+    if samples:
+        notes.append(
+            f"× Coverage assuming a {samples[0].metadata.genome_size / 1e9:.2f}Gbp "
+            "genome"
+        )
+
+    notes.append(
         "<sup>†</sup> The median percentage of alignments consisting of a given "
-        "alignment type: [M]atch, [D]eletion, [I]nsertion, and [S]oft Clipped."
+        "alignment type: <u>M</u>atch, <u>D</u>eletion, <u>I</u>nsertion, and "
+        "<u>S</u>oft clipped"
     )
-    section.add_paragraph(
+    notes.append(
         "<sup>‡</sup> Average mismatch rate (%) for aligned (M) bases. Default scale "
         "for bars is 0% to 5%"
     )
+
+    section.add_paragraph("; ".join(notes) + ".")
 
 
 ########################################################################################
@@ -433,6 +485,8 @@ def create_length_plot(
             .scale(type="log", domainMin=start_x_axis_from),
             y=alt.Y("quantile:Q")
             .title("Quantile over bp")
+            # tickCount is required or values has no effect
+            .axis(values=[0, 25, 50, 75, 100], tickCount=5)
             .scale(domainMin=0, domainMax=120),
             color=alt.Color(
                 "group",
@@ -468,7 +522,7 @@ def create_length_plot(
         .add_params(nearest)
     )
 
-    text = bars.mark_text(align="left", dx=10, dy=-10, fontSize=14).encode(
+    text = bars.mark_text(align="right", dx=10, dy=-10, fontSize=14).encode(
         text=alt.condition(nearest, "length:Q", alt.value(" ")),
     )
 
@@ -487,7 +541,6 @@ def create_length_plot(
         .resolve_axis(x="independent")
         # Disable facet header showing column name
         .configure_header(title=None)
-        .interactive()
     )
 
 
@@ -504,6 +557,7 @@ def length_pct_quantiles(lengths: dict[int, int]) -> list[int]:
 def plot_query_lengths(
     doc: simplereport.report,
     samples: list[Statistics],
+    image_format: ImageFormat,
 ) -> None:
     data = pd.concat(
         pd.DataFrame(
@@ -521,6 +575,7 @@ def plot_query_lengths(
             ("filtered (quality)", it.filtered.qscore),
             ("filtered (length)", it.filtered.length),
         )
+        if sum(counts.query_lengths.values()) > 1
     )
 
     section = doc.add()
@@ -535,7 +590,7 @@ def plot_query_lengths(
                 "filtered (length)",
             ],
             start_x_axis_from=100,
-            preselected_group="mapped",
+            preselected_group="mapped" if image_format == "vega" else None,
         )
     )
 
@@ -690,7 +745,7 @@ def plot_overall_mismatch_rates(
         .mark_bar(width=15)
         .encode(
             x=alt.X("event:N", axis=alt.Axis(labelAngle=-45)).title(None),
-            y=alt.Y("rate:Q").title("Rate"),
+            y=alt.Y("rate:Q").title("Rate").scale(domainMax=0.01, clamp=True),
             color=alt.Color(
                 "event:N",
                 legend=None,
@@ -761,8 +816,6 @@ def plot_base_composition(
     doc: simplereport.report,
     samples: list[Statistics],
 ) -> None:
-    alt.data_transformers.disable_max_rows()
-
     dataframes: list[pd.DataFrame] = []
     for it in samples:
         for key, counts in (
@@ -851,7 +904,6 @@ def plot_base_composition(
         .resolve_axis(x="independent")
         # Disable facet header showing column name
         .configure_header(title=None)
-        .interactive()
     )
 
     section = doc.add()
