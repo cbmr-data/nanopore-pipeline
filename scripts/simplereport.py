@@ -224,11 +224,55 @@ class report:
         return (
             _TEMPLATE_DOC.strip("\r\n")
             .replace("{title}", self._title)
+            .replace("{external}", self._render_external())
             .replace(
                 "{body}",
                 "\n\n".join(s.render().rstrip("\r\n") for s in self._sections),
             )
         )
+
+    def _render_external(self) -> str:
+        external: list[tuple[str, str]] = [
+            (
+                "https://cdn.jsdelivr.net/npm/purecss@3.0.0/build/pure-min.css",
+                "X38yfunGUhNzHpBaEBsWLO+A0HDYOQi8ufWDkZ0k9e0eXz/tH3II7uKZ9msv++Ls",
+            ),
+            (
+                "https://cdn.jsdelivr.net/gh/tofsjonas/sortable@3.0.0/sortable-base.min.css",
+                "RMPvgKdhV7JWj5RH7yq5bQgwAt02lpUEAdzaUPj4RLA9BdifNNiI1gtIobFLfeuO",
+            ),
+            (
+                "https://cdn.jsdelivr.net/gh/tofsjonas/sortable@latest/sortable.min.js",
+                "Ui7TCZUUp8xuvYhwek30kUmzgl+cbbS0TWhUdE7J3/dF/O7kuF0wd6ZlLZ3KhLVn",
+            ),
+        ]
+
+        if self._image_format == "vega":
+            external += [
+                (
+                    "https://unpkg.com/vega@5.21.0/build/vega.min.js",
+                    "s2nYi9D0FfKNopEKsfINeS1Ffhcf+5uvwIrb7Zqso2II+HPhzBTWvXClt+NdUwFc",
+                ),
+                (
+                    "https://unpkg.com/vega-lite@5.2.0/build/vega-lite.min.js",
+                    "tU6fj0fI2gxrcWwC7uBMp70QvipC9ukjcXyOs85VMmdCq33CrA7xQ3nJkJu0SmDm",
+                ),
+                (
+                    "https://unpkg.com/vega-embed@6.20.2/build/vega-embed.min.js",
+                    "oP1rwLY7weRZ5jvAVzfnJsAn+sYA69rQC4geH82Y9oMvr8ruA1oeE9Jkft2noCHR",
+                ),
+            ]
+
+        lines: list[str] = []
+        for url, sha384 in external:
+            if url.endswith(".css"):
+                lines.append(_TEMPLATE_CSS.format(url=url, hash=sha384))
+            elif url.endswith(".js"):
+                lines.append(_TEMPLATE_JS.format(url=url, hash=sha384))
+            else:
+                raise NotImplementedError(url)
+
+        return "".join(lines)
 
 
 _TEMPLATE_DOC = """
@@ -239,32 +283,7 @@ _TEMPLATE_DOC = """
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="X-UA-Compatible" content="ie=edge">
   <title>{title}</title>
-  <link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/purecss@3.0.0/build/pure-min.css"
-    integrity="sha384-X38yfunGUhNzHpBaEBsWLO+A0HDYOQi8ufWDkZ0k9e0eXz/tH3II7uKZ9msv++Ls"
-    crossorigin="anonymous">
-  <script
-    src="https://unpkg.com/vega@5.21.0/build/vega.min.js"
-    integrity="sha384-s2nYi9D0FfKNopEKsfINeS1Ffhcf+5uvwIrb7Zqso2II+HPhzBTWvXClt+NdUwFc"
-    crossorigin="anonymous"></script>
-   <script
-    src="https://unpkg.com/vega-lite@5.2.0/build/vega-lite.min.js"
-    integrity="sha384-tU6fj0fI2gxrcWwC7uBMp70QvipC9ukjcXyOs85VMmdCq33CrA7xQ3nJkJu0SmDm"
-    crossorigin="anonymous"></script>
-   <script
-    src="https://unpkg.com/vega-embed@6.20.2/build/vega-embed.min.js"
-    integrity="sha384-oP1rwLY7weRZ5jvAVzfnJsAn+sYA69rQC4geH82Y9oMvr8ruA1oeE9Jkft2noCHR"
-    crossorigin="anonymous"></script>
-   <link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/gh/tofsjonas/sortable@3.0.0/sortable-base.min.css"
-    integrity="sha384-RMPvgKdhV7JWj5RH7yq5bQgwAt02lpUEAdzaUPj4RLA9BdifNNiI1gtIobFLfeuO"
-    crossorigin="anonymous">
-   <script
-    src="https://cdn.jsdelivr.net/gh/tofsjonas/sortable@latest/sortable.min.js"
-    integrity="sha384-Ui7TCZUUp8xuvYhwek30kUmzgl+cbbS0TWhUdE7J3/dF/O7kuF0wd6ZlLZ3KhLVn"
-    crossorigin="anonymous"></script>
+  {external}
     <style type='text/css'>
       body {
         background-color: #E3E2DE;
@@ -343,6 +362,22 @@ _TEMPLATE_DOC = """
   </main>
 </body>
 </html>
+"""
+
+# sha384 hashes calculated as
+#   $ openssl dgst -sha384 -binary ${filename} | openssl base64
+
+_TEMPLATE_CSS = """   <link
+    rel="stylesheet"
+    href="{url}"
+    integrity="sha384-{hash}"
+    crossorigin="anonymous">
+"""
+
+_TEMPLATE_JS = """   <script
+    src="{url}"
+    integrity="sha384-{hash}"
+    crossorigin="anonymous"></script>
 """
 
 _TEMPLATE_TITLE = """
