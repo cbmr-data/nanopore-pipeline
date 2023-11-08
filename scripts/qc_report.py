@@ -24,10 +24,16 @@ class Args(tap.TypedArgs):
     head: Optional[int] = tap.arg(
         help="Process only the first N records; defaults to processing every record",
     )
+
     image_format: Literal["auto", "vega", "svg", "png", "jpg"] = tap.arg(
         help="Output format for images; if auto 'vega' will be used for 10 or fewer "
         "samples and jpg if there are more samples",
         default="auto",
+    )
+
+    jpeg_quality: int = tap.arg(
+        default=80,
+        help="Quality of JPEG images; a value in the rnage 0 to 100",
     )
 
 

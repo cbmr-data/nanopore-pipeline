@@ -44,10 +44,15 @@ class section:
     _paragraphs: List[str]
     _running_id: int = 0
 
-    def __init__(self, image_format: ImageFormat) -> None:
+    def __init__(
+        self,
+        image_format: ImageFormat,
+        jpeg_quality: int = 90,
+    ) -> None:
         self._title = None
         self._paragraphs = []
         self._image_format = image_format
+        self._jpeg_quality = jpeg_quality
 
     def set_title(self, title: str) -> "section":
         self._title = title
@@ -81,7 +86,7 @@ class section:
             elif self._image_format == "png":
                 data = vlc.vegalite_to_png(spec)  # type: ignore
             elif self._image_format == "jpg":
-                data = vlc.vegalite_to_jpeg(spec)  # type: ignore
+                data = vlc.vegalite_to_jpeg(spec, quality=self._jpeg_quality)  # type: ignore
             else:
                 raise NotImplementedError(self._image_format)
 
@@ -194,14 +199,24 @@ class report:
     _title: str
     _sections: List[section]
     _image_format: ImageFormat
+    _jpeg_quality: int
 
-    def __init__(self, title: str, image_format: ImageFormat = "jpg") -> None:
+    def __init__(
+        self,
+        title: str,
+        image_format: ImageFormat = "jpg",
+        jpeg_quality: int = 90,
+    ) -> None:
         self._title = title
         self._sections = []
         self._image_format = image_format
+        self._jpeg_quality = jpeg_quality
 
     def add(self) -> section:
-        s = section(self._image_format)
+        s = section(
+            image_format=self._image_format,
+            jpeg_quality=self._jpeg_quality,
+        )
         self._sections.append(s)
         return s
 
