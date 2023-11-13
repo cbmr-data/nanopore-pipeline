@@ -4,9 +4,10 @@
 import dataclasses
 import json
 import sys
+import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Literal, Optional
+from typing import Any, Callable, Iterable, Iterator, Literal, Optional
 
 import altair as alt
 import pandas as pd
@@ -52,26 +53,43 @@ def custom_resolver(annotations: Any) -> Validator[Any]:
     return get_typehint_validator(annotations)
 
 
+class timer:
+    def __init__(self, desc: str) -> None:
+        self._desc = desc
+        self._start = 0
+
+    def __enter__(self) -> "timer":
+        eprint(self._desc)
+        self._start = time.time()
+        return self
+
+    def __exit__(self, typ: object, value: object, tb: object) -> None:
+        eprint(f" .. finished in {time.time() - self._start:.1f}s")
+
+
 def generate_report(args: Args) -> None:
-    try:
-        data: list[object] = []
-        with args.metrics.open() as handle:
-            for line in handle:
-                if args.head is not None and len(data) >= args.head:
-                    break
+    with timer("reading data"):
+        try:
+            data: list[object] = []
+            with args.metrics.open() as handle:
+                for line in handle:
+                    if args.head is not None and len(data) >= args.head:
+                        break
 
-                data.append(json.loads(line))
-    except OSError as error:
-        sys.exit(f"Error reading metrics file: {error}")
+                    data.append(json.loads(line))
+        except OSError as error:
+            sys.exit(f"Error reading metrics file: {error}")
 
-    validator = ListValidator(
-        DataclassValidator(
-            Statistics,
-            typehint_resolver=custom_resolver,
+    with timer("validating data"):
+        validator = ListValidator(
+            DataclassValidator(
+                Statistics,
+                typehint_resolver=custom_resolver,
+            )
         )
-    )
 
-    result = validator(data)
+        result = validator(data)
+
     if isinstance(result, Invalid):
         print(result, file=sys.stderr)
         sys.exit(1)
@@ -92,18 +110,26 @@ def generate_report(args: Args) -> None:
         image_format=image_format,
     )
 
-    add_sequencing_table(report, samples)
-    add_mapping_table(report, samples)
+    def timed(
+        label: str,
+        func: Callable[[simplereport.report, list[Statistics]], None],
+    ) -> None:
+        with timer(f"building {label}"):
+            func(report, samples)
+
+    timed("sequencing table", add_sequencing_table)
+    timed("mapping table", add_mapping_table)
 
     alt.data_transformers.disable_max_rows()
 
-    plot_query_lengths(report, samples, image_format=image_format)
-    plot_cigar_percentages(report, samples)
-    plot_overall_mismatch_rates(report, samples)
-
-    plot_indel_lengths(report, samples)
-
-    plot_base_composition(report, samples)
+    timed(
+        "query length plot",
+        lambda a, b: plot_query_lengths(a, b, image_format=image_format),
+    )
+    timed("cigar percentage plot", plot_cigar_percentages)
+    timed("mismatch rates plot", plot_overall_mismatch_rates)
+    timed("indel length plot", plot_indel_lengths)
+    timed("base composition plot", plot_base_composition)
 
     print(report.render())
 
