@@ -428,10 +428,9 @@ rule multiqc_bam:
 rule qc_stats:
     input:
         passed=f"{RESULTS_DIR}/{{sample}}.pass.bam",
+        failed=f"{RESULTS_DIR}/{{sample}}.fail.bam",
     output:
         json=f"{RESULTS_DIR}/{{sample}}.cache/metrics.json",
-    envmodules:
-        "python/3.9.16",
     params:
         sample=config["qc_sample"],
     shell:
