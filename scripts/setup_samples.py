@@ -14,6 +14,8 @@ _REGEX_FOLDER = re.compile(
     r"^\d+_[0-9]+_[\d+][A-Z]_[A-Z]{3}[0-9]+_[0-9a-f]+_barcode[0-9]+$"
 )
 
+_REGEX_SAMPLE_NAME = re.compile("^[a-z0-9_]+$", re.I)
+
 _REQUIRED_HEADER = frozenset(
     (
         "ExperimentID",
@@ -45,6 +47,8 @@ class RunMetadata:
     @classmethod
     def parse(cls, row: Dict[str, str]) -> Iterable[RunMetadata]:
         date, _ = row["ExperimentID"].split("_", 1)
+        if not _REGEX_SAMPLE_NAME.match(row["SampleID"]):
+            raise ValueError(f"Invalid sample name {row['SampleID']!r}")
 
         for barcode_id in row["BarcodeID"].split("_"):
             yield RunMetadata(
