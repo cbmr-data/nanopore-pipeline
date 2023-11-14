@@ -250,16 +250,16 @@ class report:
         if self._image_format == "vega":
             external += [
                 (
-                    "https://unpkg.com/vega@5.21.0/build/vega.min.js",
-                    "s2nYi9D0FfKNopEKsfINeS1Ffhcf+5uvwIrb7Zqso2II+HPhzBTWvXClt+NdUwFc",
+                    "https://cdn.jsdelivr.net/npm/vega@5.25.0/build/vega.min.js",
+                    "iY3zZAtrtgjJoD8rliThCLEeLUYo8aSNWYQkL+Jaa3KQEAACPnaw/lQIRrFbPCsj",
                 ),
                 (
-                    "https://unpkg.com/vega-lite@5.2.0/build/vega-lite.min.js",
-                    "tU6fj0fI2gxrcWwC7uBMp70QvipC9ukjcXyOs85VMmdCq33CrA7xQ3nJkJu0SmDm",
+                    "https://cdn.jsdelivr.net/npm/vega-lite@5.16.3/build/vega-lite.min.js",
+                    "OpYOZH0bO1dKgCRBxral2WygJs8r9nrCCA73wdSb8UQlxpXf362P3+v78uKEKiz2",
                 ),
                 (
-                    "https://unpkg.com/vega-embed@6.20.2/build/vega-embed.min.js",
-                    "oP1rwLY7weRZ5jvAVzfnJsAn+sYA69rQC4geH82Y9oMvr8ruA1oeE9Jkft2noCHR",
+                    "https://cdn.jsdelivr.net/npm/vega-embed@6.22.2/build/vega-embed.min.js",
+                    "EA8k5FkiwPXfiSQeH8xlNaljrtD6qj7T49n8VoweOD7Tlm/DHHaoKLDbtJ+8ly5+",
                 ),
             ]
 
