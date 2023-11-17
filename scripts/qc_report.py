@@ -7,7 +7,7 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Literal, Optional
+from typing import Any, Callable, Iterable, Iterator, Literal, Optional, TypeVar
 
 import altair as alt
 import pandas as pd
@@ -16,11 +16,14 @@ import typed_argparse as tap
 from koda_validate import DataclassValidator, Invalid, ListValidator, Validator
 from koda_validate.typehints import get_typehint_validator
 from qc_metrics import Statistics
-from simplereport import ImageFormat, cell
+from simplereport import ImageFormat, cell, unspecified
+
+T = TypeVar("T")
 
 
 class Args(tap.TypedArgs):
     metrics: Path = tap.arg(positional=True)
+    output_prefix: Path = tap.arg(positional=True)
 
     head: Optional[int] = tap.arg(
         help="Process only the first N records; defaults to processing every record",
@@ -91,7 +94,7 @@ def generate_report(args: Args) -> None:
         result = validator(data)
 
     if isinstance(result, Invalid):
-        print(result, file=sys.stderr)
+        eprint(result)
         sys.exit(1)
 
     samples = sorted(result.val, key=lambda it: it.metadata.name)
@@ -112,13 +115,13 @@ def generate_report(args: Args) -> None:
 
     def timed(
         label: str,
-        func: Callable[[simplereport.report, list[Statistics]], None],
-    ) -> None:
+        func: Callable[[simplereport.report, list[Statistics]], T],
+    ) -> T:
         with timer(f"building {label}"):
-            func(report, samples)
+            return func(report, samples)
 
-    timed("sequencing table", add_sequencing_table)
-    timed("mapping table", add_mapping_table)
+    sequencing_table = timed("sequencing table", add_sequencing_table)
+    mapping_table = timed("mapping table", add_mapping_table)
 
     alt.data_transformers.disable_max_rows()
 
@@ -131,7 +134,17 @@ def generate_report(args: Args) -> None:
     timed("indel length plot", plot_indel_lengths)
     timed("base composition plot", plot_base_composition)
 
-    print(report.render())
+    prefix = args.output_prefix
+    report_filepath = prefix.parent / f"{prefix.name}.{image_format}.html"
+    sequencing_filepath = prefix.parent / f"{prefix.name}.sequencing.tsv"
+    mapping_filepath = prefix.parent / f"{prefix.name}.mapping.tsv"
+
+    eprint("Writing HTML report to", report_filepath)
+    report_filepath.write_text(report.render())
+    eprint("Writing sequencing table to", sequencing_filepath)
+    sequencing_table.to_csv(sequencing_filepath, sep="\t", index=False)
+    eprint("Writing mapping table to", mapping_filepath)
+    mapping_table.to_csv(mapping_filepath, sep="\t", index=False)
 
 
 ########################################################################################
@@ -201,9 +214,30 @@ def mean(counts: list[int]) -> float:
 ########################################################################################
 
 
+def table_to_pandas(
+    rows: list[list[str | int | None | float | cell]],
+    columns: list[str | None],
+) -> pd.DataFrame:
+    data: dict[str, list[object]] = {key: [] for key in columns if key is not None}
+
+    for row in rows:
+        for key, value in dict(zip(columns, row)).items():
+            if key is not None:
+                if isinstance(value, cell):
+                    if not isinstance(value.raw_data, unspecified):
+                        value = value.raw_data
+
+                data[key].append(value)
+
+    return pd.DataFrame(data)
+
+
+########################################################################################
+
+
 class bp_cell(cell):
     def __init__(self, value: int, *, shading: float | Literal["DYNAMIC"] = 0) -> None:
-        super().__init__(value, sort_data=value, shading=shading)
+        super().__init__(value, sort_data=value, raw_data=value, shading=shading)
 
     def __str__(self) -> str:
         assert isinstance(self.value, int), self.value
@@ -212,7 +246,7 @@ class bp_cell(cell):
 
 class count_cell(cell):
     def __init__(self, value: int, *, shading: float | Literal["DYNAMIC"] = 0) -> None:
-        super().__init__(value, sort_data=value, shading=shading)
+        super().__init__(value, sort_data=value, raw_data=value, shading=shading)
 
     def __str__(self) -> str:
         assert isinstance(self.value, int), self.value
@@ -225,7 +259,10 @@ def sum_qlengths(counts: dict[int, int]) -> tuple[int, int]:
     return reads, bp
 
 
-def add_sequencing_table(doc: simplereport.report, samples: list[Statistics]) -> None:
+def add_sequencing_table(
+    doc: simplereport.report,
+    samples: list[Statistics],
+) -> pd.DataFrame:
     max_query_bp = 1
     for it in samples:
         current_query_bp = 0
@@ -340,6 +377,29 @@ def add_sequencing_table(doc: simplereport.report, samples: list[Statistics]) ->
 
     section.add_paragraph("; ".join(notes) + ".")
 
+    return table_to_pandas(
+        rows,
+        columns=[
+            "Sample",
+            "Reads",
+            "Length",
+            "bp",
+            "X",
+            None,
+            "ShortReads",
+            "LowQReads",
+            None,
+            "FilteredReads",
+            None,
+            "FilteredLength",
+            None,
+            "Filteredbp",
+            None,
+            "FilteredX",
+            None,
+        ],
+    )
+
 
 ########################################################################################
 
@@ -390,7 +450,10 @@ class mapping_summary:
         return self.mapped_bp + self.unmapped_bp
 
 
-def add_mapping_table(doc: simplereport.report, samples: list[Statistics]) -> None:
+def add_mapping_table(
+    doc: simplereport.report,
+    samples: list[Statistics],
+) -> pd.DataFrame:
     max_query_gbp = 0
     max_mismatch_rate = 0
 
@@ -490,6 +553,30 @@ def add_mapping_table(doc: simplereport.report, samples: list[Statistics]) -> No
     )
 
     section.add_paragraph("; ".join(notes) + ".")
+
+    return table_to_pandas(
+        rows,
+        columns=[
+            "Sample",
+            "QueryReads",
+            None,
+            "UnmappedReads",
+            None,
+            "Unmappedbp",
+            None,
+            "MappedReads",
+            None,
+            "Mappedbp",
+            "MappedX",
+            None,
+            "MedianPctM",
+            "MedianPctD",
+            "MedianPctI",
+            "MedianPctS",
+            None,
+            "MismatchPct",
+        ],
+    )
 
 
 ########################################################################################

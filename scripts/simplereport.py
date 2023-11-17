@@ -22,6 +22,7 @@ class cell:
         value: None | int | float | str,
         *,
         sort_data: unspecified | int | float | str | None = unspecified(),
+        raw_data: unspecified | int | float | str | None = unspecified(),
         shading: float | Literal["DYNAMIC"] = 0,
     ) -> None:
         self.value = value
@@ -30,6 +31,7 @@ class cell:
         )
 
         self.sort_data = sort_data
+        self.raw_data = raw_data
 
     @property
     def has_sort_data(self) -> bool:
