@@ -222,7 +222,7 @@ rule minimap2:
         fastq=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fq.gz",
     output:
         bam=temporary(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.bam"),
-    threads: 14
+    threads: 10
     envmodules:
         "minimap2/2.26",
         "libdeflate/1.18",
