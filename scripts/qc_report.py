@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
-# -*- coding: utf8 -*-
 # pyright: basic
+from __future__ import annotations
+
 import dataclasses
 import json
+import re
 import sys
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Literal, Optional, TypeVar
+from typing import (
+    Any,
+    Callable,
+    Iterable,
+    Iterator,
+    Literal,
+    NoReturn,
+    Optional,
+    TypeVar,
+)
 
 import altair as alt
 import pandas as pd
@@ -16,7 +27,7 @@ import typed_argparse as tap
 from koda_validate import DataclassValidator, Invalid, ListValidator, Validator
 from koda_validate.typehints import get_typehint_validator
 from qc_metrics import Statistics
-from simplereport import ImageFormat, cell, unspecified
+from simplereport import ImageFormat, Row, cell, unspecified
 
 T = TypeVar("T")
 
@@ -40,9 +51,20 @@ class Args(tap.TypedArgs):
         help="Quality of JPEG images; a value in the rnage 0 to 100",
     )
 
+    sample_info: Optional[Path] = tap.arg(
+        default=None,
+        help="Path to TSV table file containing sample information. An 'ExperimentID' "
+        "column and a 'SampleID' column is required, all other columns are ignored.",
+    )
 
-def eprint(*args: object):
+
+def eprint(*args: object) -> None:
     print(*args, file=sys.stderr)
+
+
+def abort(*args: object) -> NoReturn:
+    eprint(*args)
+    sys.exit(1)
 
 
 def custom_resolver(annotations: Any) -> Validator[Any]:
@@ -70,7 +92,106 @@ class timer:
         eprint(f" .. finished in {time.time() - self._start:.1f}s")
 
 
+@dataclasses.dataclass
+class Sample:
+    name: str
+    experiments: list[Experiment]
+
+
+@dataclasses.dataclass
+class Experiment:
+    name: str
+    timestamp: int | None = None
+    samples: list[Sample] = dataclasses.field(default_factory=list)
+
+    @property
+    def key(self) -> str:
+        if self.timestamp is None:
+            return self.name
+
+        return f"{self.timestamp}_{self.name}"
+
+    @staticmethod
+    def parse_id(label: str) -> tuple[str, int | None]:
+        match = re.match(r"([0-9]{8})_(.*)", label)
+        if match is not None:
+            timestamp, name = match.groups()
+            return name, int(timestamp)
+
+        return label, None
+
+
+@dataclasses.dataclass
+class Metadata:
+    samples: dict[str, Sample] = dataclasses.field(default_factory=dict)
+    experiments: dict[str, Experiment] = dataclasses.field(default_factory=dict)
+
+
+def read_sample_information(filepath: Path) -> Metadata:
+    samples: dict[str, Sample] = {}
+    experiments: dict[str, Experiment] = {}
+    with filepath.open() as handle:
+        header = handle.readline().rstrip("\r\n").split("\t")
+        if {"SampleID", "ExperimentID"} - set(header):
+            abort("Required columns SampleID and ExperimentID not found in", filepath)
+
+        for linenum, line in enumerate(handle, start=2):
+            values = line.rstrip("\r\n").split("\t")
+            if len(values) != len(header):
+                abort(f"Malformed line {linenum} in {filepath}")
+
+            row = dict(zip(header, values))
+            sample_id = row["SampleID"].strip()
+            experiment_id = row["ExperimentID"].strip()
+            if not (sample_id and experiment_id):
+                abort(f"Missing SampleID or ExperimentID at {filepath}:{linenum}")
+
+            try:
+                sample = samples[sample_id]
+            except KeyError:
+                sample = samples[sample_id] = Sample(name=sample_id, experiments=[])
+
+            try:
+                experiment = experiments[experiment_id]
+            except KeyError:
+                name, timestamp = Experiment.parse_id(experiment_id)
+                experiment = experiments[experiment_id] = Experiment(
+                    name=name, timestamp=timestamp, samples=[]
+                )
+
+            sample.experiments.append(experiment)
+            experiment.samples.append(sample)
+
+    return Metadata(samples=samples, experiments=experiments)
+
+
+def prune_metadata(metadata: Metadata, samples: list[Statistics]) -> None:
+    whitelist = set(it.metadata.name for it in samples)
+    filtered_samples: dict[str, Sample] = {}
+    for key, sample in metadata.samples.items():
+        if sample.name not in whitelist:
+            for experiment in sample.experiments:
+                experiment.samples.remove(sample)
+        else:
+            filtered_samples[key] = sample
+
+    for sample in samples:
+        name = sample.metadata.name
+        if name not in filtered_samples:
+            filtered_samples[name] = Sample(name=name, experiments=[])
+
+    metadata.samples = filtered_samples
+    metadata.experiments = {
+        key: value for key, value in metadata.experiments.items() if value.samples
+    }
+
+
 def generate_report(args: Args) -> None:
+    metadata = Metadata()
+    if args.sample_info is not None:
+        with timer("reading sample/experiment data"):
+            metadata = read_sample_information(args.sample_info)
+
     with timer("reading data"):
         try:
             data: list[object] = []
@@ -81,7 +202,7 @@ def generate_report(args: Args) -> None:
 
                     data.append(json.loads(line))
         except OSError as error:
-            sys.exit(f"Error reading metrics file: {error}")
+            abort(f"Error reading metrics file: {error}")
 
     with timer("validating data"):
         validator = ListValidator(
@@ -94,8 +215,7 @@ def generate_report(args: Args) -> None:
         result = validator(data)
 
     if isinstance(result, Invalid):
-        eprint(result)
-        sys.exit(1)
+        abort(result)
 
     samples = sorted(result.val, key=lambda it: it.metadata.name)
     if args.image_format == "auto":
@@ -108,6 +228,8 @@ def generate_report(args: Args) -> None:
     else:
         image_format = args.image_format
 
+    prune_metadata(metadata=metadata, samples=samples)
+
     report = simplereport.report(
         title="Nanopore quality metrics",
         image_format=image_format,
@@ -115,20 +237,20 @@ def generate_report(args: Args) -> None:
 
     def timed(
         label: str,
-        func: Callable[[simplereport.report, list[Statistics]], T],
+        func: Callable[[simplereport.report, list[Statistics], Metadata], T],
     ) -> T:
         with timer(f"building {label}"):
-            return func(report, samples)
+            return func(report, samples, metadata)
 
+    experiments_table = timed("experiment table", add_experiments_table)
     sequencing_table = timed("sequencing table", add_sequencing_table)
     mapping_table = timed("mapping table", add_mapping_table)
 
     alt.data_transformers.disable_max_rows()
 
-    timed(
-        "query length plot",
-        lambda a, b: plot_query_lengths(a, b, image_format=image_format),
-    )
+    with timer("building query length plot"):
+        plot_query_lengths(report, samples, metadata, image_format=image_format)
+
     timed("cigar percentage plot", plot_cigar_percentages)
     timed("mismatch rates plot", plot_overall_mismatch_rates)
     timed("indel length plot", plot_indel_lengths)
@@ -136,11 +258,14 @@ def generate_report(args: Args) -> None:
 
     prefix = args.output_prefix
     report_filepath = prefix.parent / f"{prefix.name}.{image_format}.html"
+    experiments_filepath = prefix.parent / f"{prefix.name}.experiments.tsv"
     sequencing_filepath = prefix.parent / f"{prefix.name}.sequencing.tsv"
     mapping_filepath = prefix.parent / f"{prefix.name}.mapping.tsv"
 
     eprint("Writing HTML report to", report_filepath)
     report_filepath.write_text(report.render())
+    eprint("Writing experiments table to", experiments_filepath)
+    experiments_table.to_csv(experiments_filepath, sep="\t", index=False)
     eprint("Writing sequencing table to", sequencing_filepath)
     sequencing_table.to_csv(sequencing_filepath, sep="\t", index=False)
     eprint("Writing mapping table to", mapping_filepath)
@@ -215,7 +340,7 @@ def mean(counts: list[int]) -> float:
 
 
 def table_to_pandas(
-    rows: list[list[str | int | None | float | cell]],
+    rows: list[Row] | list[list[str | int | None | float | cell]],
     columns: list[str | None],
 ) -> pd.DataFrame:
     data: dict[str, list[object]] = {key: [] for key in columns if key is not None}
@@ -229,10 +354,24 @@ def table_to_pandas(
 
                 data[key].append(value)
 
-    return pd.DataFrame(data)
+    return pd.DataFrame(data, columns=columns, index=None)
 
 
 ########################################################################################
+
+
+class checkbox(cell):
+    def __init__(self, **data: str) -> None:
+        super().__init__(True)
+        self._data = data
+
+    def __str__(self) -> str:
+        checked = "checked " if self.value else ""
+        data: list[str] = []
+        for key, value in self._data.items():
+            data.append(f"data-{key}={value!r}")
+
+        return f'<input type="checkbox" {" ".join(data)} onchange="on_click_checkbox(this)" {checked} />'
 
 
 class bp_cell(cell):
@@ -259,9 +398,64 @@ def sum_qlengths(counts: dict[int, int]) -> tuple[int, int]:
     return reads, bp
 
 
+def add_experiments_table(
+    doc: simplereport.report,
+    samples: list[Statistics],
+    metadata: Metadata,
+) -> pd.DataFrame:
+    rows: list[Row] = []
+    for experiment in sorted(
+        metadata.experiments.values(), key=lambda it: (it.timestamp or 0, it.name)
+    ):
+        repeat_samples = 0
+        for sample in experiment.samples:
+            if len(sample.experiments) > 1:
+                repeat_samples += 1
+
+        rows.append(
+            Row(
+                checkbox(experiment=experiment.key),
+                cell(experiment.timestamp),
+                experiment.name,
+                len(experiment.samples),
+                repeat_samples,
+                cls="experiment",
+                data={"experiment": experiment.key},
+            )
+        )
+
+    section = doc.add()
+    section.set_title("Experiments")
+    section.add_table(
+        rows,
+        columns=[
+            None,
+            "Date",
+            "Experiment",
+            "Samples",
+            "Repeat Samples*",
+        ],
+    )
+
+    section.add_paragraph(
+        "<sup>*</sup> The number of samples sequenced in more than one experiment"
+    )
+
+    return table_to_pandas(
+        rows,
+        columns=[
+            None,
+            "Experiment",
+            "Samples",
+            "RepeatSamples*",
+        ],
+    )
+
+
 def add_sequencing_table(
     doc: simplereport.report,
     samples: list[Statistics],
+    metadata: Metadata,
 ) -> pd.DataFrame:
     max_query_bp = 1
     for it in samples:
@@ -271,7 +465,7 @@ def add_sequencing_table(
             current_query_bp += current_bp
         max_query_bp = max(max_query_bp, current_query_bp)
 
-    rows: list[list[int | str | float | None | simplereport.cell]] = []
+    rows: list[Row] = []
     for sample in samples:
         lowq_reads, lowq_bp = sum_qlengths(sample.filtered.qscore.query_lengths)
         short_reads, short_bp = sum_qlengths(sample.filtered.length.query_lengths)
@@ -295,8 +489,14 @@ def add_sequencing_table(
         median_length = round(next(quantiles_from_counts(query_lengths, [0.5])))
         median_length_raw = round(next(quantiles_from_counts(query_lengths_raw, [0.5])))
 
+        sample_meta = metadata.samples[sample.metadata.name]
+        experiment_keys = [experiment.key for experiment in sample_meta.experiments]
+        experiments_names = [experiment.name for experiment in sample_meta.experiments]
+
         rows.append(
-            [
+            Row(
+                checkbox(sample=sample.metadata.name),
+                " ".join(sorted(experiments_names)),
                 sample.metadata.name,
                 count_cell(query_reads, shading="DYNAMIC"),
                 count_cell(median_length_raw, shading="DYNAMIC"),
@@ -311,22 +511,27 @@ def add_sequencing_table(
                     lowq_reads,
                     shading=lowq_reads / query_reads,
                 ),
+                count_cell(
+                    passed_reads,
+                    shading=passed_reads / query_reads,
+                ),
                 None,
-                count_cell(passed_reads),
-                count_cell(passed_reads - query_reads),
                 count_cell(median_length, shading="DYNAMIC"),
-                count_cell(median_length - median_length_raw),
                 bp_cell(
                     passed_bp,
                     shading=passed_bp / max_query_bp,
                 ),
-                bp_cell(passed_bp - query_bp),
                 cell(
                     f"{passed_bp / sample.metadata.genome_size:.1f}",
                     shading=passed_bp / max_query_bp,
                 ),
                 f"{(passed_bp - query_bp) / sample.metadata.genome_size:.1f}",
-            ]
+                cls="sample",
+                data={
+                    "sample": sample.metadata.name,
+                    "experiments": " ".join(experiment_keys),
+                },
+            )
         )
     min_lengths = {f"{it.metadata.min_query_length}" for it in samples}
     min_length = next(iter(min_lengths)) if len(min_lengths) == 1 else "N"
@@ -338,6 +543,8 @@ def add_sequencing_table(
     section.add_table(
         rows,
         columns=[
+            None,
+            "Experiments",
             "Sample",
             "Reads<sup>*</sup>",
             "Length<sup>†</sup>",
@@ -346,16 +553,14 @@ def add_sequencing_table(
             None,
             "Short<sup>‡</sup>",
             "LowQ<sup>‡</sup>",
-            None,
             "Filtered",
-            "Δ",
+            None,
             "Length<sup>†</sup>",
-            "Δ",
             "Gbp",
-            "Δ",
             "×",
             "Δ",
         ],
+        id="tbl_sequencing",
     )
 
     notes: list[str] = [
@@ -380,6 +585,8 @@ def add_sequencing_table(
     return table_to_pandas(
         rows,
         columns=[
+            None,
+            "Groups",
             "Sample",
             "Reads",
             "Length",
@@ -388,13 +595,10 @@ def add_sequencing_table(
             None,
             "ShortReads",
             "LowQReads",
-            None,
             "FilteredReads",
             None,
             "FilteredLength",
-            None,
             "Filteredbp",
-            None,
             "FilteredX",
             None,
         ],
@@ -453,6 +657,7 @@ class mapping_summary:
 def add_mapping_table(
     doc: simplereport.report,
     samples: list[Statistics],
+    metadata: Metadata,
 ) -> pd.DataFrame:
     max_query_gbp = 0
     max_mismatch_rate = 0
@@ -469,8 +674,8 @@ def add_mapping_table(
 
         summary_statistics.append((sample, it))
 
-    rows: list[list[int | str | float | None | simplereport.cell]] = [
-        [
+    rows: list[Row] = [
+        Row(
             sample.metadata.name,
             count_cell(it.query_reads, shading="DYNAMIC"),
             None,
@@ -501,7 +706,15 @@ def add_mapping_table(
                 f"{it.mismatch_rate * 100:.1f}",
                 shading=it.mismatch_rate / max(0.05, max_mismatch_rate),
             ),
-        ]
+            cls="mapping",
+            data={
+                "sample": sample.metadata.name,
+                "experiments": " ".join(
+                    experiment.key
+                    for experiment in metadata.samples[sample.metadata.name].experiments
+                ),
+            },
+        )
         for sample, it in summary_statistics
     ]
 
@@ -529,6 +742,7 @@ def add_mapping_table(
             None,
             "MM%<sup>‡</sup>",
         ],
+        id="tbl_mapping",
     )
 
     notes: list[str] = [
@@ -676,6 +890,7 @@ def length_pct_quantiles(lengths: dict[int, int]) -> list[int]:
 def plot_query_lengths(
     doc: simplereport.report,
     samples: list[Statistics],
+    metadata: Metadata,
     image_format: ImageFormat,
 ) -> None:
     data = pd.concat(
@@ -724,6 +939,7 @@ def plot_query_lengths(
 def plot_cigar_percentages(
     doc: simplereport.report,
     samples: list[Statistics],
+    metadata: Metadata,
 ) -> None:
     data = pd.concat(
         pd.DataFrame(
@@ -836,6 +1052,7 @@ def plot_cigar_percentages(
 def plot_overall_mismatch_rates(
     doc: simplereport.report,
     samples: list[Statistics],
+    metadata: Metadata,
 ) -> None:
     data: list[list[str | int | float]] = []
     for it in samples:
@@ -896,6 +1113,7 @@ def plot_overall_mismatch_rates(
 def plot_indel_lengths(
     doc: simplereport.report,
     samples: list[Statistics],
+    metadata: Metadata,
 ) -> None:
     data = pd.concat(
         pd.DataFrame(
@@ -934,6 +1152,7 @@ def plot_indel_lengths(
 def plot_base_composition(
     doc: simplereport.report,
     samples: list[Statistics],
+    metadata: Metadata,
 ) -> None:
     dataframes: list[pd.DataFrame] = []
     for it in samples:

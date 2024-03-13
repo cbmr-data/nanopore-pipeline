@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import itertools
-from typing import Any, List, Optional
+from typing import Any, Iterator, List, Optional
 
 import altair as alt
 import pandas as pd
@@ -14,6 +14,21 @@ ImageFormat: TypeAlias = Literal["vega", "png", "jpg", "svg"]
 
 class unspecified:
     pass
+
+
+class Row:
+    def __init__(
+        self,
+        *args: None | int | float | str | cell,
+        cls: str | None = None,
+        data: dict[str, str] | None = None,
+    ) -> None:
+        self.cls = cls
+        self.data = {} if data is None else data
+        self.values = args
+
+    def __iter__(self) -> Iterator[None | int | float | str | cell]:
+        return iter(self.values)
 
 
 class cell:
@@ -102,21 +117,27 @@ class section:
 
     def add_table(
         self,
-        rows: list[list[str | int | None | float | cell]],
+        rows: list[Row] | list[list[str | int | None | float | cell]],
         columns: List[str | None],
+        id: str | None = None,
     ) -> "section":
         self._update_shading(rows)
         lines: List[str] = []
         add = lines.append
 
-        add('      <table class="sortable pure-table io-table pure-table-striped">')
+        id = "" if id is None else f'id="{id}"'
+        classes = " ".join(("sortable", "pure-table", "io-table", "pure-table-striped"))
+        add(f'      <table class="{classes}" {id}>')
         if columns:
             add("        <thead>")
             add("          <tr>")
-            for name in columns:
+            for idx, name in enumerate(columns):
                 attrs = ""
                 if name is None:
-                    name = ""
+                    if idx:
+                        name = ""
+                    else:
+                        name = '<input type="checkbox" onchange="toggle_all(this)" checked />'
                     attrs = ' class="no-sort"'
 
                 add(f"            <th{attrs}>{name}</th>")
@@ -124,8 +145,15 @@ class section:
             add("        </thead>")
         add("        <tbody>")
         for row in rows:
-            add("          <tr>")
+            row_attrs: list[str] = []
+            if isinstance(row, Row):
+                for key, value in row.data.items():
+                    row_attrs.append(f"data-{key}={value!r}")
 
+                if row.cls is not None:
+                    row_attrs.append(f"class={row.cls}")
+
+            add(f"          <tr {' ' .join(row_attrs)}>")
             for value in row:
                 attrs = ""
                 if (
@@ -176,7 +204,7 @@ class section:
 
     def _update_shading(
         self,
-        rows: list[list[str | int | float | None | cell]],
+        rows: list[Row] | list[list[str | int | float | None | cell]],
     ) -> None:
         for column in itertools.zip_longest(*rows):
             values: list[int | float] = []
@@ -352,8 +380,77 @@ _TEMPLATE_DOC = """
           padding-top: 10px;
       }
     </style>
+  <script>
+    let QC_SAMPLES = {};
+    let QC_EXPERIMENTS= {};
+
+    function on_click_checkbox(chk) {
+      if (chk.dataset["experiment"]) {
+        QC_EXPERIMENTS[chk.dataset["experiment"]] = chk.checked;
+      } else if (chk.dataset["sample"]) {
+        QC_SAMPLES[chk.dataset["sample"]] = chk.checked;
+      }
+
+      update_samples("sample");
+      update_samples("mapping");
+    }
+
+    function initialize() {
+      for (let elem of document.getElementsByClassName("experiment")) {
+        for (let child of elem.getElementsByTagName("input")) {
+          QC_EXPERIMENTS[elem.dataset["experiment"]] = child.checked;
+        }
+      }
+
+      for (let elem of document.getElementsByClassName("sample")) {
+        for (let child of elem.getElementsByTagName("input")) {
+          QC_SAMPLES[elem.dataset["sample"]] = child.checked;
+        }
+      }
+
+      update_samples("sample");
+        update_samples("mapping");
+    }
+
+    function update_samples(className) {
+      for (let elem of document.getElementsByClassName(className)) {
+        var visible = className === "mapping" ? QC_SAMPLES[elem.dataset["sample"]] : true;
+        if (visible) {
+          var experiment_visible = false;
+          for (let experiment of elem.dataset["experiments"].split(" ")) {
+            if (QC_EXPERIMENTS[experiment]) {
+              experiment_visible = true;
+              break;
+            }
+          }
+
+          visible = visible && experiment_visible;
+        }
+
+        if (visible) {
+          elem.style.removeProperty("display");
+        } else {
+          elem.style["display"] = "none";
+        }
+      }
+    }
+
+    function toggle_all(elem) {
+      let checked = elem.checked;
+      while (elem && elem.tagName !== "TABLE") {
+        elem = elem.parentElement;
+      }
+
+      for (let child of elem.getElementsByTagName("INPUT")) {
+        if (child.checked !== checked) {
+          child.checked = checked;
+          child.onchange(child);
+        }
+      }
+    }
+  </script>
 </head>
-<body>
+<body onload="initialize()">
   <main>
     <div id='layout'>
       <div class="title">
