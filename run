@@ -49,6 +49,11 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         type=Path,
         default=Path("results"),
     )
+    parser.add_argument(
+        "--config",
+        action="append",
+        default=[],
+    )
 
     return parser.parse_args(argv)
 
@@ -84,7 +89,9 @@ def main(argv: List[str]) -> int:
         f"input_dir={batch}",
         f"results_dir={results}",
         f"dorado_models={models}",
+        *args.config,
     ]
+
     command.extend(args.args)
 
     eprint("Command =", " ".join(quote(it) for it in command))
