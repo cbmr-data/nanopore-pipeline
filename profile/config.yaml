@@ -1,5 +1,5 @@
 # No more than 2 GPU tasks can run at once + a few jobs for other tasks
-jobs: 8
+jobs: 16
 #
 slurm: true
 use-envmodules: true
@@ -10,6 +10,7 @@ resources:
   - "gpumisc=2"
 default-resources:
   - "mem_mb=None"
+  - "runtime=None"
 max-jobs-per-second: 5
 max-status-checks-per-second: 4
 local-cores: 16
