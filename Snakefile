@@ -1,12 +1,12 @@
 import hashlib
 import os
+import random
 import re
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 import snakemake.utils
-
 
 configfile: "config/config.yaml"
 
@@ -116,6 +116,12 @@ def _generate_chunks(destination, samples):
     }
 
 
+def write_text(filename, text):
+    temp_filename = Path("{}.{}".format(filename, random.random()))
+    temp_filename.write_text(text)
+    temp_filename.rename(filename)
+
+
 SAMPLES = _collect_samples(
     destination=config["results_dir"],
     source=config["input_dir"],
@@ -144,22 +150,21 @@ rule pipeline:
         f"{RESULTS_DIR}/statistics/metrics.json",
 
 
-rule dorado_symlinks:
+rule dorado_batch:
     priority: 50
     group:
         "setup"
     input:
         lambda wildcards: SAMPLES[wildcards.sample][wildcards.hash],
     output:
-        batch=directory(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s"),
+        batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s.txt",
     resources:
         gpumisc=1,  # Used to limit how many tasks are queud on the GPU node
     run:
-        os.makedirs(output.batch, exist_ok=True)
-        for filepath in input:
-            src = os.path.realpath(filepath)
-            dst = os.path.join(output.batch, os.path.basename(filepath))
-            os.symlink(src, dst)
+        filenames = [os.path.abspath(filename) for filename in input]
+        filenames.append("")  # for trailing newline
+
+        write_text(output.batch, "\n".join(filenames))
 
 
 rule dorado_model:
@@ -167,7 +172,7 @@ rule dorado_model:
     group:
         "setup"
     input:
-        batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s",
+        batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s.txt",
     output:
         model=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.model.txt",
     params:
@@ -178,7 +183,9 @@ rule dorado_model:
         """
         readonly DEST="{output.model}.${{RANDOM}}"
 
-        ./venv/bin/python3 scripts/select_model.py {params.models:q} {input.batch:q} > "${{DEST}}"
+        cat {input.batch:q} \
+            | xargs ./venv/bin/python3 scripts/select_model.py {params.models:q} \
+            > "${{DEST}}"
         mv "${{DEST}}" {output.model:q}
         """
 
@@ -186,7 +193,7 @@ rule dorado_model:
 rule dorado:
     priority: 100
     input:
-        batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s",
+        batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s.txt",
         model=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.model.txt",
     output:
         fastq=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fq.gz",
@@ -205,13 +212,18 @@ rule dorado:
         """
         readonly MODEL=$(cat {input.model:q})
         readonly DEST="{output.fastq}.${{RANDOM}}"
+        readonly BATCH="{output.fastq}.${{RANDOM}}.batch"
 
-        dorado basecaller --verbose --recursive --device "cuda:all" "${{MODEL}}" {input.batch:q} \
+        mkdir "${{BATCH}}"
+        cat {input.batch:q} | xargs -I "{{}}" ln -s "{{}}" "${{BATCH}}/"
+
+        dorado basecaller --verbose --recursive --device "cuda:all" "${{MODEL}}" ${{BATCH}} \
             | samtools bam2fq -T '*' \
             | bgzip -@ 6 \
             > "${{DEST}}"
 
         mv "${{DEST}}" {output.fastq:q}
+        rm -r "${{BATCH}}"
         """
 
 

@@ -179,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "models", type=Path, help="table specifying what models to use for what "
     )
-    parser.add_argument("root", type=Path)
+    parser.add_argument("root", type=Path, nargs="+")
 
     return parser
 
@@ -190,23 +190,24 @@ def main(argv: list[str]) -> int:
     models = read_model_table(args.models)
     rates: BatchRates | None = None
 
-    for filename in collect_raw_files([args.root]):
-        it = collect_rates(filename)
-        if rates is None:
-            rates = it
-        else:
-            rates.sample_rate.update(it.sample_rate)
-            rates.bases_per_second.update(it.bases_per_second)
+    for root in args.root:
+        for filename in collect_raw_files([root]):
+            it = collect_rates(filename)
+            if rates is None:
+                rates = it
+            else:
+                rates.sample_rate.update(it.sample_rate)
+                rates.bases_per_second.update(it.bases_per_second)
 
     sample_rate: int | None = None
     bases_per_second: int | None = None
 
     if rates is None:
-        abort("Rates could not be determined for", args.root)
+        abort("Rates could not be determined")
     elif len(rates.sample_rate) > 1:
-        abort(f"Multiple sample-rates for {args.root}: {rates.sample_rate}")
+        abort(f"Multiple sample-rates: {rates.sample_rate}")
     elif len(rates.bases_per_second) > 1:
-        abort(f"Multiple bases-per-second for {args.root}: {rates.bases_per_second}")
+        abort(f"Multiple bases-per-second: {rates.bases_per_second}")
 
     if rates.sample_rate:
         (sample_rate,) = rates.sample_rate
