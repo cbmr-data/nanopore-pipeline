@@ -86,13 +86,25 @@ def main(argv: List[str]) -> int:
         "input",
         "--profile",
         profile,
+    ]
+
+    configfile = project / "config.yaml"
+    if configfile.exists():
+        command += ["--configfile", configfile]
+    else:
+        eprint(f"WARNING: Using default config: {str(configfile)!r} not found")
+
+    # Set *after* the configfile; not clear if this is required
+    command += [
         "--config",
         f"input_dir={data}",
         f"results_dir={results}",
         f"dorado_models={models}",
-        *args.config,
     ]
 
+    # Extra config values are guaranteed to be added before other args
+    command.extend(args.config)
+    # Additional command-line arguments; any format
     command.extend(args.args)
 
     eprint("Command =", " ".join(quote(it) for it in command))
