@@ -1,7 +1,6 @@
 /.ruff_cache
 /.snakemake
 /.vscode
-/batches
 /resources
 /results
 /scratch

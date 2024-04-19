@@ -32,22 +32,17 @@ class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
 
 def parse_args(argv: List[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(formatter_class=HelpFormatter)
-    parser.add_argument("batch")
+    parser.add_argument("project")
     parser.add_argument("args", nargs="*")
     parser.add_argument(
-        "--batches",
+        "--projects",
         type=Path,
-        default=Path("batches"),
+        default=Path("projects"),
     )
     parser.add_argument(
         "--profile",
         type=Path,
         default=Path("profile"),
-    )
-    parser.add_argument(
-        "--results",
-        type=Path,
-        default=Path("results"),
     )
     parser.add_argument(
         "--config",
@@ -61,17 +56,23 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 def main(argv: List[str]) -> int:
     args = parse_args(argv)
 
-    batch: Path = args.batches / args.batch
-    results: Path = args.results / args.batch
-    profile: Path = args.profile
-    models = Path(f"{batch}.models.tsv")
+    project: Path = args.projects / args.project
+    data: Path = project / "data"
+    results: Path = project / "results"
+    models: Path = project / "models.tsv"
 
-    if not os.path.lexists(batch):
-        abort(f"no batch directory at {quote(batch)}")
-    elif not batch.is_dir():
-        abort(f"invalid batch directory at {quote(batch)}")
+    profile: Path = args.profile
+
+    if not os.path.lexists(project):
+        abort(f"no project directory at {quote(project)}")
+    elif not project.is_dir():
+        abort(f"invalid project directory at {quote(project)}")
+    elif not os.path.lexists(data):
+        abort(f"no data directory at {quote(data)}")
+    elif not data.is_dir():
+        abort(f"invalid data directory at {quote(data)}")
     elif not models.is_file():
-        abort(f"*.models.tsv table not found for {quote(batch)}")
+        abort(f"models.tsv table not found at {quote(models)}")
 
     if not profile.is_dir():
         abort(f"invalid profile directory at {quote(profile)}")
@@ -86,7 +87,7 @@ def main(argv: List[str]) -> int:
         "--profile",
         profile,
         "--config",
-        f"input_dir={batch}",
+        f"input_dir={data}",
         f"results_dir={results}",
         f"dorado_models={models}",
         *args.config,
