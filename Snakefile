@@ -180,8 +180,7 @@ rule dorado_model:
         """
         readonly DEST="{output.model}.${{RANDOM}}"
 
-        cat {input.batch:q} \
-            | xargs ./venv/bin/python3 scripts/select_model.py {params.models:q} \
+         ./venv/bin/python3 scripts/select_model.py --file-lists {params.models:q} {input.batch:q} \
             > "${{DEST}}"
         mv "${{DEST}}" {output.model:q}
         """
