@@ -65,6 +65,14 @@ def collect_raw_files(
             raise KeyError(it)
 
 
+def read_file_table(fpath: Path) -> Iterator[Path]:
+    with fpath.open() as handle:
+        for line in handle:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                yield Path(line)
+
+
 #######################################################################################
 
 
@@ -177,9 +185,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "models", type=Path, help="table specifying what models to use for what "
+        "models",
+        type=Path,
+        help="table specifying what models to use for what parameters",
     )
     parser.add_argument("root", type=Path, nargs="+")
+    parser.add_argument(
+        "--file-lists",
+        action="store_true",
+        help="If set, the paths specified on teh command line are expected to be lists "
+        " of files, one file per line",
+    )
 
     return parser
 
@@ -191,7 +207,12 @@ def main(argv: list[str]) -> int:
     rates: BatchRates | None = None
 
     for root in args.root:
-        for filename in collect_raw_files([root]):
+        if args.file_lists:
+            filenames = read_file_table(root)
+        else:
+            filenames = collect_raw_files([root])
+
+        for filename in filenames:
             it = collect_rates(filename)
             if rates is None:
                 rates = it
