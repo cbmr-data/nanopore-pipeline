@@ -19,7 +19,6 @@ RESULTS_DIR = config["results_dir"]
 SCRIPTS_DIR = os.path.join(workflow.basedir, "scripts")
 
 
-_REGEX_SAMPLE_NAME = re.compile("^[a-z0-9_]+$", re.I)
 
 
 def abort(*args, **kwargs):
@@ -88,8 +87,6 @@ def _collect_samples(destination, source, batch_size=25):
     samples = {}
     for it in sorted(Path(source).iterdir()):
         samples[it.name] = sample = {}
-        if not _REGEX_SAMPLE_NAME.match(it.name):
-            raise ValueError("Invalid sample name for {!r}".format(it))
 
         for group in _collect_fast5s(it):
             group.sort()  # Ensure stable batches even filesystem order changes
