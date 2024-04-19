@@ -9,8 +9,10 @@ resources:
   # Queue at most 2 misc tasks on the GPU node
   - "gpumisc=2"
 default-resources:
-  - "mem_mb=None"
-  - "runtime=None"
+   # Same mem-per-CPU as server defaults, to silence warning
+  - "mem_mb_per_cpu=15948"
+  # High runtime limit, to catch jobs that hang
+  - "runtime=720"
 max-jobs-per-second: 5
 max-status-checks-per-second: 4
 local-cores: 16
