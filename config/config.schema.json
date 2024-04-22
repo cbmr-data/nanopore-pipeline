@@ -9,7 +9,10 @@
       "type": "string"
     },
     "batch_size": {
-      "type": ["integer", "null"]
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "qc_sample": {
       "type": "integer"
@@ -19,6 +22,12 @@
     },
     "minimap2_fasta": {
       "type": "string"
+    },
+    "sniffles_tandem_repeats": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
@@ -27,6 +36,7 @@
     "batch_size",
     "qc_sample",
     "dorado_models",
-    "minimap2_fasta"
+    "minimap2_fasta",
+    "sniffles_tandem_repeats"
   ]
 }

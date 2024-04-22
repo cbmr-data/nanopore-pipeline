@@ -11,3 +11,6 @@ qc_sample: 1000000
 
 # Location of reference genome (FASTA) used by minimap
 minimap2_fasta: "resources/Homo_sapiens.GRCh38_full_analysis_set_plus_decoy_hla_noColonsAsterisks.fa"
+
+# Tandem repeats file for sniffles; must be a path, null, or an empty string
+sniffles_tandem_repeats:

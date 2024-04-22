@@ -295,15 +295,24 @@ rule sniffles2_snf:
     output:
         snf=f"{RESULTS_DIR}/{{sample}}.pass.snf",
     threads: 8
+    params:
+        # None is allowed in the config specification, but gets stringified as None in shell
+        tandem_repeats=config["sniffles_tandem_repeats"] or "",
     envmodules:
         "sniffles/2.0.7",
     shell:
         """
+        args=()
+        if [ -n "{params.tandem_repeats}" ]; then
+            args+=("--tandem-repeats" {params.tandem_repeats:q})
+        fi
+
         sniffles \
             --threads {threads} \
             --reference "{input.fa}" \
             --input "{input.bam}" \
-            --snf "{output.snf}"
+            --snf "{output.snf}" \
+            "${{args[@]}}"
         """
 
 
@@ -328,14 +337,25 @@ rule sniffles2_vcf:
         snf=expand(f"{RESULTS_DIR}/{{sample}}.pass.snf", sample=SAMPLES),
     output:
         vcf=f"{RESULTS_DIR}/genotypes.vcf.gz",
+    params:
+        # None is allowed in the config specification, but gets stringified as None in shell
+        tandem_repeats=config["sniffles_tandem_repeats"] or "",
     threads: 8
+    envmodules:
+        "sniffles/2.0.7",
     shell:
         """
+        args=()
+        if [ -n "{params.tandem_repeats}" ]; then
+            args+=("--tandem-repeats" {params.tandem_repeats:q})
+        fi
+
         sniffles \
             --threads {threads} \
             --reference "{input.fa}" \
             --input "{input.tsv}" \
-            --vcf "{output.vcf}"
+            --vcf "{output.vcf}" \
+            "${{args[@]}}"
         """
 
 
