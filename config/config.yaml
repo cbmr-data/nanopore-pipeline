@@ -14,3 +14,6 @@ minimap2_fasta: "resources/Homo_sapiens.GRCh38_full_analysis_set_plus_decoy_hla_
 
 # Tandem repeats file for sniffles; must be a path, null, or an empty string
 sniffles_tandem_repeats:
+
+# List of sample to exclude from genotyping
+excluded_from_genotyping: []

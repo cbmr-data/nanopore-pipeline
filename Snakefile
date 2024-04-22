@@ -8,6 +8,7 @@ from pathlib import Path
 
 import snakemake.utils
 
+
 configfile: "config/config.yaml"
 
 
@@ -17,8 +18,6 @@ snakemake.utils.validate(config, "config/config.schema.json")
 RESULTS_DIR = config["results_dir"]
 # Location of custom scripts
 SCRIPTS_DIR = os.path.join(workflow.basedir, "scripts")
-
-
 
 
 def abort(*args, **kwargs):
@@ -100,6 +99,14 @@ def _collect_samples(destination, source, batch_size=25):
     return samples
 
 
+def _collect_samples_for_genotyping(samples, blacklist):
+    unknown_samples = set(blacklist).difference(samples)
+    if unknown_samples:
+        raise AssertionError(f"Unexpected samples in blacklist: {unknown_samples}")
+
+    return tuple(sorted(set(samples).difference(blacklist)))
+
+
 def _generate_chunks(destination, samples):
     return {
         sample: {
@@ -124,6 +131,12 @@ SAMPLES = _collect_samples(
     source=config["input_dir"],
     batch_size=config["batch_size"],
 )
+
+# Samples for which genotyping should be performed using sniffles
+SAMPLES_FOR_GENOTYPING = _collect_samples_for_genotyping(
+    samples=SAMPLES, blacklist=config["excluded_from_genotyping"]
+)
+
 CHUNKS = _generate_chunks(destination=config["results_dir"], samples=SAMPLES)
 
 #######################################################################################
@@ -319,7 +332,7 @@ rule sniffles2_snf:
 # TODO: Belongs in temporary or genotyping folder
 rule sniffles2_tsv:
     input:
-        snf=expand(f"{RESULTS_DIR}/{{sample}}.pass.snf", sample=SAMPLES),
+        snf=expand(f"{RESULTS_DIR}/{{sample}}.pass.snf", sample=SAMPLES_FOR_GENOTYPING),
     output:
         tsv=f"{RESULTS_DIR}/genotypes.tsv",
     run:
@@ -334,7 +347,7 @@ rule sniffles2_vcf:
     input:
         fa=config["minimap2_fasta"],
         tsv=f"{RESULTS_DIR}/genotypes.tsv",
-        snf=expand(f"{RESULTS_DIR}/{{sample}}.pass.snf", sample=SAMPLES),
+        snf=expand(f"{RESULTS_DIR}/{{sample}}.pass.snf", sample=SAMPLES_FOR_GENOTYPING),
     output:
         vcf=f"{RESULTS_DIR}/genotypes.vcf.gz",
     params:

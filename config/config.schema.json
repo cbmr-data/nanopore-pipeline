@@ -28,6 +28,12 @@
         "string",
         "null"
       ]
+    },
+    "excluded_from_genotyping": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   },
   "required": [
@@ -37,6 +43,7 @@
     "qc_sample",
     "dorado_models",
     "minimap2_fasta",
-    "sniffles_tandem_repeats"
+    "sniffles_tandem_repeats",
+    "excluded_from_genotyping"
   ]
 }
