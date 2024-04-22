@@ -357,12 +357,12 @@ rule fastqc_fastq:
         "perl/5.26.3",
         "openjdk/20.0.0",
         # FIXME: Update to 0.12.1 or later
-        "fastqc/0.11.9",  # requies perl and openjdk
+        "fastqc/0.12.1",  # requies perl and openjdk
         "seqtk/1.4",
     shell:
         """
-        # -t is used to force the allocation of additional memory
-        seqtk sample {input} {params.sample} | fastqc -t 8 -f fastq -o {params.outdir} stdin:{wildcards.sample}
+        seqtk sample {input:q} {params.sample} \
+            | fastqc --memory 10000 -f fastq -o {params.outdir:q} "stdin:{wildcards.sample}"
         """
 
 
@@ -379,15 +379,14 @@ rule fastqc_bam:
     envmodules:
         "perl/5.26.3",
         "openjdk/20.0.0",
-        "fastqc/0.11.9",  # requires perl and openjdk
+        "fastqc/0.12.1",  # requires perl and openjdk
         "libdeflate/1.18",
         "samtools-libdeflate/1.18",
     shell:
         r"""
-        # fastqc -t is used to force the allocation of additional memory
-        samtools bam2fq -@ {threads} {input} \
+        samtools bam2fq -@ {threads} {input:q} \
             | seqtk sample - {params.sample} \
-            | fastqc -t 8 --java {SCRIPTS_DIR}/java_wrapper.sh -f fastq -o {params.outdir} stdin:{wildcards.sample}_{wildcards.kind}
+            | fastqc --memory 10000 --java {SCRIPTS_DIR}/java_wrapper.sh -f fastq -o {params.outdir:q} stdin:{wildcards.sample}_{wildcards.kind}
         """
 
 
