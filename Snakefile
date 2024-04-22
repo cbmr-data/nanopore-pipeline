@@ -208,7 +208,7 @@ rule dorado:
         """
         readonly MODEL=$(cat {input.model:q})
         readonly DEST="{output.fastq}.${{RANDOM}}"
-        readonly BATCH="{output.fastq}.${{RANDOM}}.batch"
+        readonly BATCH="${{DEST}}.batch"
 
         mkdir "${{BATCH}}"
         cat {input.batch:q} | xargs -I "{{}}" ln -s "{{}}" "${{BATCH}}/"
