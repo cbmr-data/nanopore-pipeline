@@ -440,11 +440,13 @@ rule qc_stats:
         json=f"{RESULTS_DIR}/{{sample}}.cache/metrics.json",
     params:
         sample=config["qc_sample"],
+    threads: 4
     shell:
         r"""
         ./venv/bin/python3 scripts/qc_metrics.py \
             --sample-size {params.sample} \
             --output {output:q} \
+            --threads {threads} \
             {input:q}
         """
 
