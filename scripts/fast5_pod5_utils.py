@@ -38,7 +38,7 @@ def read_raw_info(filename: Path) -> InfoDict:
     if suffix == ".fast5":
         with h5py.File(filename, "r") as handle:
             for name, item in handle.items():
-                for group in ("channel_id", "context_tags"):
+                for group in ("channel_id", "context_tags", "tracking_id"):
                     config[group] = dict(item[group].attrs.items())
                 break
     elif suffix == ".pod5":
