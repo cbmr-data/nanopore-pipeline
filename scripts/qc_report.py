@@ -175,15 +175,20 @@ def prune_metadata(metadata: Metadata, samples: list[Statistics]) -> None:
         else:
             filtered_samples[key] = sample
 
+    dummy_experiment = Experiment("Unknown")
     for sample in samples:
         name = sample.metadata.name
         if name not in filtered_samples:
-            filtered_samples[name] = Sample(name=name, experiments=[])
+            filtered_samples[name] = Sample(name=name, experiments=[dummy_experiment])
+            dummy_experiment.samples.append(filtered_samples[name])
 
     metadata.samples = filtered_samples
     metadata.experiments = {
         key: value for key, value in metadata.experiments.items() if value.samples
     }
+
+    if dummy_experiment.samples:
+        metadata.experiments[dummy_experiment.name] = dummy_experiment
 
 
 def generate_report(args: Args) -> None:
@@ -816,11 +821,11 @@ def create_length_plot(
             x=alt.X("length:Q")
             .title(None)
             .scale(type="log", domainMin=start_x_axis_from),
-            y=alt.Y("quantile:Q")
-            .title("Quantile over bp")
+            y=alt.Y("quantile:Q").title("Quantile over bp")
             # tickCount is required or values has no effect
-            .axis(values=[0, 25, 50, 75, 100], tickCount=5)
-            .scale(domainMin=0, domainMax=120),
+            .axis(values=[0, 25, 50, 75, 100], tickCount=5).scale(
+                domainMin=0, domainMax=120
+            ),
             color=alt.Color(
                 "group",
                 scale=alt.Scale(domain=groups),
