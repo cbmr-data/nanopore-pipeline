@@ -53,7 +53,7 @@ class cell:
         return not isinstance(self.sort_data, unspecified)
 
     def __str__(self) -> str:
-        return str(self.value)
+        return "" if self.value is None else str(self.value)
 
 
 class section:
