@@ -1,6 +1,6 @@
 # No more than 2 GPU tasks can run at once + a few jobs for other tasks
-jobs: 16
-#
+jobs: 32
+# Default to using slurm
 slurm: true
 use-envmodules: true
 resources:
