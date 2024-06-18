@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-# -*- coding: utf8 -*-
-# pyright: strict
+from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, List, BinaryIO
+from typing import Any, BinaryIO
 
 # BGZIP end-of-file marker
 EOF_MARKER = b"\x1f\x8b\x08\x04\x00\x00\x00\x00\x00\xff\x06\x00\x42\x43\x02\x00\x1b\x00\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 
 
 def copy_bgzip(src: BinaryIO, dst: BinaryIO, length: int) -> bool:
+    """Copies a BGZip file from src to dst, excluding the tailing EOF marker. Two chunks
+    are kept in memory at all times to ensure that we are able to identify the EOF
+    marker, even if the 2nd to last read partially overlaps it.
+    """
+    length = max(len(EOF_MARKER), length)
     chunk_1 = src.read(length)
     chunk_2 = src.read(length)
+
     while True:
         chunk_3 = src.read(length)
         if not chunk_3:
@@ -38,20 +44,32 @@ class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
         super().__init__(*args, **kwargs)
 
 
-def main(argv: List[str]) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         formatter_class=HelpFormatter,
         usage="%(prog)s 1.gz 2.gz .... > out.gz",
     )
-    parser.add_argument("files", nargs="+", type=Path)
+    parser.add_argument(
+        "files",
+        nargs="+",
+        type=Path,
+        help="One or more bgzip files",
+    )
     parser.add_argument(
         "--buffer",
-        type=lambda it: max(len(EOF_MARKER), int(it)),
+        type=int,
         default=64 * 1024,
+        help="Size of internal buffer. The script may load up to 3 buffers at a time",
     )
 
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    parser = build_parser()
     if sys.stdout.isatty():
         parser.print_usage()
+        return 1
 
     args = parser.parse_args(argv)
 
