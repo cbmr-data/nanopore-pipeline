@@ -100,5 +100,11 @@ dmypy.json
 *~
 
 # Misc
+.snakemake
 .vscode
+resources/
+scratch/
 sync.sh
+
+# Python
+__pycache__
