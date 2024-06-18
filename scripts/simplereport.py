@@ -272,7 +272,7 @@ class report:
                 "RMPvgKdhV7JWj5RH7yq5bQgwAt02lpUEAdzaUPj4RLA9BdifNNiI1gtIobFLfeuO",
             ),
             (
-                "https://cdn.jsdelivr.net/gh/tofsjonas/sortable@latest/sortable.min.js",
+                "https://cdn.jsdelivr.net/gh/tofsjonas/sortable@3.2.2/sortable.min.js",
                 "Ui7TCZUUp8xuvYhwek30kUmzgl+cbbS0TWhUdE7J3/dF/O7kuF0wd6ZlLZ3KhLVn",
             ),
         ]
