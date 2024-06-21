@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# -*- coding: utf8 -*-
-# pyright: strict
+# ruff: noqa: UP006, UP035, FA100
 import argparse
+import getpass
 import os
 import shlex
 import subprocess
@@ -49,6 +49,17 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         action="append",
         default=[],
     )
+    parser.add_argument(
+        "--shadow-prefix",
+        default=Path("/scratch") / getpass.getuser(),
+        help="Shadow prefix for temporary files used for certain tasks to improve "
+        "performance",
+    )
+    parser.add_argument(
+        "--bin",
+        default=Path("./venv/bin").resolve(),
+        help="Bin folder added (prefixed) to PATH",
+    )
 
     return parser.parse_args(argv)
 
@@ -73,6 +84,8 @@ def main(argv: List[str]) -> int:
         abort(f"invalid data directory at {quote(data)}")
     elif not models.is_file():
         abort(f"models.tsv table not found at {quote(models)}")
+    elif not args.bin.is_dir():
+        abort(f"--bin is not a directory: {quote(args.bin)}")
 
     if not profile.is_dir():
         abort(f"invalid profile directory at {quote(profile)}")
@@ -86,6 +99,8 @@ def main(argv: List[str]) -> int:
         "input",
         "--profile",
         profile,
+        "--shadow-prefix",
+        args.shadow_prefix,
     ]
 
     configfile = project / "config.yaml"
@@ -107,10 +122,14 @@ def main(argv: List[str]) -> int:
     # Additional command-line arguments; any format
     command.extend(args.args)
 
+    env = dict(os.environ)
+    env["PATH"] = "{}:{}".format(args.bin, env["PATH"])
+
     eprint("Command =", " ".join(quote(it) for it in command))
     return subprocess.call(
         command,
         stdin=subprocess.DEVNULL,
+        env=env,
     )
 
 

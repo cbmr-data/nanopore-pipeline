@@ -20,14 +20,26 @@
     "dorado_models": {
       "type": "string"
     },
-    "minimap2_fasta": {
-      "type": "string"
-    },
-    "sniffles_tandem_repeats": {
-      "type": [
-        "string",
-        "null"
-      ]
+    "genomes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "minimap2_fasta": {
+            "type": "string"
+          },
+          "sniffles_tandem_repeats": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "minimap2_fasta",
+          "sniffles_tandem_repeats"
+        ]
+      }
     },
     "excluded_from_genotyping": {
       "type": "array",
@@ -37,13 +49,12 @@
     }
   },
   "required": [
-    "input_dir",
-    "results_dir",
     "batch_size",
-    "qc_sample",
     "dorado_models",
-    "minimap2_fasta",
-    "sniffles_tandem_repeats",
-    "excluded_from_genotyping"
+    "excluded_from_genotyping",
+    "genomes",
+    "input_dir",
+    "qc_sample",
+    "results_dir"
   ]
 }

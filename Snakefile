@@ -8,6 +8,8 @@ from pathlib import Path
 
 import snakemake.utils
 
+from scripts.nanosnk import *
+
 
 configfile: "config/config.yaml"
 
@@ -20,192 +22,165 @@ RESULTS_DIR = config["results_dir"]
 SCRIPTS_DIR = os.path.join(workflow.basedir, "scripts")
 
 
-def abort(*args, **kwargs):
-    kwargs["file"] = sys.stderr
-    print("ERROR:", *args, **kwargs)
-    sys.exit(1)
-
-
 if sys.version_info < (3, 7):
     # Parts of this script requires on ordered dicts
     abort("Python v3.7 or later required")
 elif not Path(config["input_dir"]).is_dir():
     abort("Per sample FAST5 directories not found at", config["input_dir"])
-elif not Path(config["minimap2_fasta"]).is_file():
-    abort("Reference FASTA not found at", config["minimap2_fasta"])
-elif not Path(config["dorado_models"]).is_file():
+
+for genome in config["genomes"].values():
+    if not Path(genome["minimap2_fasta"]).is_file():
+        abort("Reference FASTA not found at", genome["minimap2_fasta"])
+
+    tandem_repeats = genome["sniffles_tandem_repeats"]
+    if tandem_repeats and not Path(tandem_repeats).is_file():
+        abort("Tandem repeats not found found at", tandem_repeats)
+
+if not Path(config["dorado_models"]).is_file():
     abort("Dorado model table not found at", config["dorado_models"])
 
 
-#######################################################################################
+GENOMES = config["genomes"]
 
-
-def fragment(size, items):
-    """Faster alternative to grouper for lists/strings."""
-    return (items[i : i + size] for i in range(0, len(items), size))
-
-
-def sha256(items):
-    """Calculates the SHA256 hash for a set of values"""
-    hasher = hashlib.sha256()
-    for it in items:
-        hasher.update(it.encode("utf-8"))
-    return hasher.hexdigest()
-
-
-def _collect_fast5s(source, groups=None):
-    # fast5s are grouped by dir, to ensure that adding/removing whole folders
-    # does not result in the re-processing of existing folders
-    if groups is None:
-        groups = defaultdict(list)
-
-    for it in source.iterdir():
-        if it.is_dir():
-            _collect_fast5s(it, groups)
-        elif it.suffix.lower() in (".fast5", ".pod5"):
-            groups[it.parent].append(str(it))
-
-    return groups.values()
-
-
-def _hash_source_files(source, filenames):
-    # Exclude the source folder from the hashed paths, to prevent global
-    # changes in folder structure (e.g. Esrum v. Computerome) from
-    # causing files to be re-run.
-    result = []
-    for filename in filenames:
-        filepath = Path(filename)
-        assert filepath.is_relative_to(source)
-
-        result.append(str(filepath.relative_to(source)))
-
-    return sha256(result)
-
-
-def _collect_samples(destination, source, batch_size=25):
-    samples = {}
-    for it in sorted(Path(source).iterdir()):
-        samples[it.name] = sample = {}
-
-        for group in _collect_fast5s(it):
-            group.sort()  # Ensure stable batches even filesystem order changes
-
-            if batch_size is None:
-                sample[_hash_source_files(source, group)] = group
-            else:
-                for batch in fragment(batch_size, group):
-                    sample[_hash_source_files(source, batch)] = batch
-
-    return samples
-
-
-def _collect_samples_for_genotyping(samples, blacklist):
-    unknown_samples = set(blacklist).difference(samples)
-    if unknown_samples:
-        raise AssertionError(f"Unexpected samples in blacklist: {unknown_samples}")
-
-    return tuple(sorted(set(samples).difference(blacklist)))
-
-
-def _generate_chunks(destination, samples):
-    return {
-        sample: {
-            extension: [
-                os.path.join(destination, sample + ".cache", f"{key}.{extension}")
-                for key in batches
-            ]
-            for extension in ("bam", "fq.gz")
-        }
-        for sample, batches in sorted(samples.items())
-    }
-
-
-def write_text(filename, text):
-    temp_filename = Path("{}.{}".format(filename, random.random()))
-    temp_filename.write_text(text)
-    temp_filename.rename(filename)
-
-
-SAMPLES = _collect_samples(
-    destination=config["results_dir"],
+SAMPLES = collect_samples(
     source=config["input_dir"],
     batch_size=config["batch_size"],
 )
 
+# Names sorted to ensure stable input order
+GENOME_NAMES = tuple(sorted(GENOMES))
+SAMPLE_NAMES = tuple(sorted(SAMPLES))
+
 # Samples for which genotyping should be performed using sniffles
-SAMPLES_FOR_GENOTYPING = _collect_samples_for_genotyping(
+SAMPLES_FOR_GENOTYPING = collect_samples_for_genotyping(
     samples=SAMPLES, blacklist=config["excluded_from_genotyping"]
 )
 
-CHUNKS = _generate_chunks(destination=config["results_dir"], samples=SAMPLES)
+#######################################################################################
+
+
+def get_fast5_chunk_for_chunk(wildcards):
+    return (
+        SAMPLES[wildcards.sample].batches[wildcards.batch].chunks[wildcards.hash].files
+    )
+
+
+def get_fastq_chunks_for_batch(wildcards):
+    return SAMPLES[wildcards.sample].fastq_chunks(RESULTS_DIR, wildcards.batch)
+
+
+def get_passed_batches_for_sample(wildcards):
+    return SAMPLES[wildcards.sample].bam_batches(RESULTS_DIR, wildcards.genome, "pass")
+
+
+def get_failed_batches_for_sample(wildcards):
+    return SAMPLES[wildcards.sample].bam_batches(RESULTS_DIR, wildcards.genome, "fail")
+
+
+def get_fasta_from_wildcards(wildcards):
+    return GENOMES[wildcards.genome]["minimap2_fasta"]
+
+
+def get_fasta_mmi_from_wildcards(wildcards):
+    return get_fasta_from_wildcards(wildcards) + ".mmi"
+
+
+def get_tandem_repeats_from_wildcards(wildcards):
+    # None is allowed in the config specification, but gets stringified as None in shell
+    filepath = GENOMES[wildcards.genome]["sniffles_tandem_repeats"]
+    if filepath:
+        return os.path.abspath(filepath)
+
+    return ""
+
 
 #######################################################################################
 
 
 wildcard_constraints:
-    # Sample names derived from paths should not span directories
-    sample="[^/]+",
+    # Genome, sample, and batch names derived from paths should not span directories
+    genome="[a-zA-Z0-9_-]+",
+    sample="[a-zA-Z0-9_-]+",
+    batch="[a-zA-Z0-9_-]+",
     # hashes are all hexencoded SHA256 hashes
     hash="[a-zA-Z0-9]+",
+    # Filtered BAMs
+    kind="pass|fail",
 
 
 rule pipeline:
     input:
-        f"{RESULTS_DIR}/genotypes.vcf.gz",
-        expand(f"{RESULTS_DIR}/{{sample}}.fq.gz", sample=sorted(SAMPLES)),
-        # MultiQC reports from FastQC reports
-        f"{RESULTS_DIR}/statistics/premap/multiqc.html",
-        f"{RESULTS_DIR}/statistics/postmap/multiqc.html",
+        # Cohort genotypes from filtered BAMs
+        expand(f"{RESULTS_DIR}/genotypes.{{genome}}.vcf.gz", genome=GENOME_NAMES),
+        # Alignments against each genome
+        expand(
+            f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.pass.bam",
+            genome=GENOME_NAMES,
+            sample=SAMPLE_NAMES,
+        ),
+        expand(
+            f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.fail.bam",
+            genome=GENOME_NAMES,
+            sample=SAMPLE_NAMES,
+        ),
+        # BAI files are explicitly required, for samples excluded from genotyping
+        expand(
+            f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.pass.bam.bai",
+            genome=GENOME_NAMES,
+            sample=SAMPLE_NAMES,
+        ),
         # Alignment metrics
-        f"{RESULTS_DIR}/statistics/metrics.json",
+        expand(f"{RESULTS_DIR}/statistics/metrics.{{genome}}.json", genome=GENOME_NAMES),
+        expand(
+            f"{RESULTS_DIR}/statistics/metrics.{{genome}}.experiments.tsv",
+            genome=GENOME_NAMES,
+        ),
+        expand(
+            f"{RESULTS_DIR}/statistics/metrics.{{genome}}.jpg.html",
+            genome=GENOME_NAMES,
+        ),
+        expand(
+            f"{RESULTS_DIR}/statistics/metrics.{{genome}}.mapping.tsv",
+            genome=GENOME_NAMES,
+        ),
+        expand(
+            f"{RESULTS_DIR}/statistics/metrics.{{genome}}.sequencing.tsv",
+            genome=GENOME_NAMES,
+        ),
 
 
-rule dorado_batch:
+rule dorado_model:
     priority: 50
     group:
         "setup"
     input:
-        lambda wildcards: SAMPLES[wildcards.sample][wildcards.hash],
+        get_fast5_chunk_for_chunk,
     output:
-        batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s.txt",
-    resources:
-        gpumisc=1,  # Used to limit how many tasks are queud on the GPU node
-    run:
-        filenames = [os.path.abspath(filename) for filename in input]
-        filenames.append("")  # for trailing newline
-
-        write_text(output.batch, "\n".join(filenames))
-
-
-rule dorado_model:
-    priority: 75
-    group:
-        "setup"
-    input:
-        batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s.txt",
-    output:
-        model=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.model.txt",
+        batch=f"{RESULTS_DIR}/reads/{{sample}}/{{batch}}/{{hash}}.fast5s.txt",
+        model=f"{RESULTS_DIR}/reads/{{sample}}/{{batch}}/{{hash}}.model.txt",
     params:
-        models=config["dorado_models"],
+        models=os.path.abspath(config["dorado_models"]),
+        script=os.path.abspath("scripts/select_model.py"),
     resources:
         gpumisc=1,  # Used to limit how many tasks are queud on the GPU node
+    shadow:
+        "minimal"
     shell:
         """
-        readonly DEST="{output.model}.${{RANDOM}}"
-
-         ./venv/bin/python3 scripts/select_model.py --file-lists {params.models:q} {input.batch:q} \
-            > "${{DEST}}"
-        mv "${{DEST}}" {output.model:q}
+        realpath {input:q} > {output.batch:q}
+        python3 {params.script:q} --file-lists {params.models:q} {output.batch:q} \
+            > {output.model:q}
         """
 
 
 rule dorado:
     priority: 100
     input:
-        batch=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fast5s.txt",
-        model=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.model.txt",
+        fast5s=get_fast5_chunk_for_chunk,
+        batch=f"{RESULTS_DIR}/reads/{{sample}}/{{batch}}/{{hash}}.fast5s.txt",
+        model=f"{RESULTS_DIR}/reads/{{sample}}/{{batch}}/{{hash}}.model.txt",
     output:
-        fastq=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fq.gz",
+        temporary(f"{RESULTS_DIR}/reads/{{sample}}/{{batch}}/{{hash}}.fq.gz"),
     threads: 8
     resources:
         gputask=1,  # Used to limit how many tasks are queud on the GPU node
@@ -217,11 +192,12 @@ rule dorado:
         "libdeflate/1.18",
         "htslib/1.18",
         "samtools-libdeflate/1.18",
+    shadow:
+        "minimal"
     shell:
         """
         readonly MODEL=$(cat {input.model:q})
-        readonly DEST="{output.fastq}.${{RANDOM}}"
-        readonly BATCH="${{DEST}}.batch"
+        readonly BATCH="{output}.batch"
 
         mkdir "${{BATCH}}"
         cat {input.batch:q} | xargs -I "{{}}" ln -s "{{}}" "${{BATCH}}/"
@@ -229,90 +205,132 @@ rule dorado:
         dorado basecaller --verbose --recursive --device "cuda:all" "${{MODEL}}" ${{BATCH}} \
             | samtools bam2fq -T '*' \
             | bgzip -@ 6 \
-            > "${{DEST}}"
+            > {output:q}
 
-        mv "${{DEST}}" {output.fastq:q}
         rm -r "${{BATCH}}"
+        """
+
+
+rule merge_fastq_chunks:
+    input:
+        get_fastq_chunks_for_batch,
+    output:
+        f"{RESULTS_DIR}/reads/{{sample}}/{{batch}}.fq.gz",
+    envmodules:
+        "python/3.9.16",
+    params:
+        script=os.path.abspath("scripts/mergebgzip.py"),
+    shadow:
+        "minimal"
+    shell:
+        r"""
+        python3 {params.script:q} {input:q} > {output:q}
         """
 
 
 rule minimap2:
     input:
-        fa=config["minimap2_fasta"],
-        mmi=config["minimap2_fasta"] + ".mmi",
-        fastq=f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.fq.gz",
+        fa=get_fasta_from_wildcards,
+        mmi=get_fasta_mmi_from_wildcards,
+        fastq=f"{RESULTS_DIR}/reads/{{sample}}/{{batch}}.fq.gz",
     output:
-        bam=temporary(f"{RESULTS_DIR}/{{sample}}.cache/{{hash}}.bam"),
+        passed=temporary(
+            f"{RESULTS_DIR}/alignments/{{sample}}/{{batch}}.{{genome}}.pass.bam"
+        ),
+        failed=temporary(
+            f"{RESULTS_DIR}/alignments/{{sample}}/{{batch}}.{{genome}}.fail.bam"
+        ),
+    params:
+        qscore_filter=10,
+        script=os.path.abspath("scripts/filter_bam.py"),
     threads: 10
     envmodules:
         "minimap2/2.26",
         "libdeflate/1.18",
         "samtools-libdeflate/1.18",
+    shadow:
+        "minimal"
     shell:
         """
-            readonly DEST="{output.bam}.${{RANDOM}}"
-
-            minimap2 -y -t 10 -ax map-ont -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}' {input.mmi} {input.fastq} \
-            | samtools sort -@ 4 -u -T {output.bam} \
-            | samtools calmd -Q -@ 4 -b - {input.fa} \
-            > "${{DEST}}"
-
-            mv "${{DEST}}" {output.bam:q}
+        minimap2 -y -t 10 -ax map-ont -R '@RG\\tID:{wildcards.batch}\\tSM:{wildcards.sample}' {input.mmi:q} {input.fastq:q} \
+        | python3 {params.script:q} \
+            --input - \
+            --output-fail {output.failed:q} \
+            --output-pass - \
+            --min-query-length 500 \
+            --min-base-quality {params.qscore_filter} \
+            --exclude-flags 0x704 \
+        | samtools sort -@ 4 -u -T {output.passed:q} \
+        | samtools calmd -Q -@ 4 -b - {input.fa:q} \
+        > {output.passed:q}
         """
 
 
-rule merge_fq:
+rule merge_bam_pass:
     input:
-        fastq=lambda wildcards: CHUNKS[wildcards.sample]["fq.gz"],
+        get_passed_batches_for_sample,
     output:
-        fastq=f"{RESULTS_DIR}/{{sample}}.fq.gz",
-    envmodules:
-        "python/3.9.16",
-    shell:
-        r"""
-        python3 scripts/mergebgzip.py {input.fastq} > {output.fastq}
-        """
-
-
-rule merge_bam:
-    priority: 200
-    params:
-        qscore_filter=10,
-    input:
-        bams=lambda wildcards: CHUNKS[wildcards.sample]["bam"],
-    output:
-        passed=f"{RESULTS_DIR}/{{sample}}.pass.bam",
-        passed_csi=f"{RESULTS_DIR}/{{sample}}.pass.bam.csi",
-        failed=f"{RESULTS_DIR}/{{sample}}.fail.bam",
-        failed_csi=f"{RESULTS_DIR}/{{sample}}.fail.bam.csi",
-    threads: 8
+        f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.pass.bam",
+    threads: 4
     envmodules:
         "libdeflate/1.18",
         "samtools-libdeflate/1.18",
+    shadow:
+        "minimal"
     shell:
         """
-        THREADS=1
-        if [ {threads} -gt 2 ]; then
-            THREADS=$(({threads} / 2))
-        fi
+        samtools merge -@ {threads} {output:q} {input:q}
+        """
 
-        samtools merge -@ ${{THREADS}} -u - {input} \
-            | samtools view -@ ${{THREADS}} --write-index -e '[qs] >= {params.qscore_filter}' --output {output.passed} --unoutput {output.failed} -b -
+
+rule merge_bam_fail:
+    input:
+        get_failed_batches_for_sample,
+    output:
+        f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.fail.bam",
+    envmodules:
+        "libdeflate/1.18",
+        "samtools-libdeflate/1.18",
+    shadow:
+        "minimal"
+    shell:
+        """
+        samtools cat -o {output:q} {input:q}
+        """
+
+
+rule index_bam_files:
+    input:
+        "{prefix}.bam",
+    output:
+        "{prefix}.bam.bai",
+    threads: 4
+    envmodules:
+        "libdeflate/1.18",
+        "samtools-libdeflate/1.18",
+    shadow:
+        "minimal"
+    shell:
+        """
+        samtools index {input:q}
         """
 
 
 rule sniffles2_snf:
     input:
-        fa=config["minimap2_fasta"],
-        bam=f"{RESULTS_DIR}/{{sample}}.pass.bam",
+        fa=get_fasta_from_wildcards,
+        bam=f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.pass.bam",
+        bai=f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.pass.bam.bai",
     output:
-        snf=f"{RESULTS_DIR}/{{sample}}.pass.snf",
+        f"{RESULTS_DIR}/genotypes/{{sample}}.{{genome}}.pass.snf",
     threads: 8
     params:
         # None is allowed in the config specification, but gets stringified as None in shell
-        tandem_repeats=config["sniffles_tandem_repeats"] or "",
+        tandem_repeats=get_tandem_repeats_from_wildcards,
     envmodules:
-        "sniffles/2.0.7",
+        "sniffles/2.3.3",
+    shadow:
+        "minimal"
     shell:
         """
         args=()
@@ -322,40 +340,45 @@ rule sniffles2_snf:
 
         sniffles \
             --threads {threads} \
-            --reference "{input.fa}" \
-            --input "{input.bam}" \
-            --snf "{output.snf}" \
+            --reference "{input.fa:q}" \
+            --input "{input.bam:q}" \
+            --snf "{output:q}" \
             "${{args[@]}}"
         """
 
 
-# TODO: Belongs in temporary or genotyping folder
 rule sniffles2_tsv:
     input:
-        snf=expand(f"{RESULTS_DIR}/{{sample}}.pass.snf", sample=SAMPLES_FOR_GENOTYPING),
+        snf=lambda wildcards: expand(
+            f"{RESULTS_DIR}/genotypes/{{sample}}.{wildcards.genome}.pass.snf",
+            sample=SAMPLES_FOR_GENOTYPING,
+        ),
     output:
-        tsv=f"{RESULTS_DIR}/genotypes.tsv",
+        tsv=f"{RESULTS_DIR}/genotypes/{{genome}}.tsv",
     run:
         with open(output.tsv, "wt") as handle:
             for filename in input:
                 name, _ = os.path.basename(filename).split(".", 1)
-                print(filename, name, sep="\t", file=handle)
+                print(os.path.abspath(filename), name, sep="\t", file=handle)
 
 
-# TODO: Better name / location? Place in `genotyping/`?
 rule sniffles2_vcf:
     input:
-        fa=config["minimap2_fasta"],
-        tsv=f"{RESULTS_DIR}/genotypes.tsv",
-        snf=expand(f"{RESULTS_DIR}/{{sample}}.pass.snf", sample=SAMPLES_FOR_GENOTYPING),
+        fa=get_fasta_from_wildcards,
+        tsv=f"{RESULTS_DIR}/genotypes/{{genome}}.tsv",
+        snf=lambda wildcards: expand(
+            f"{RESULTS_DIR}/genotypes/{{sample}}.{wildcards.genome}.pass.snf",
+            sample=SAMPLES_FOR_GENOTYPING,
+        ),
     output:
-        vcf=f"{RESULTS_DIR}/genotypes.vcf.gz",
+        f"{RESULTS_DIR}/genotypes.{{genome}}.vcf.gz",
     params:
-        # None is allowed in the config specification, but gets stringified as None in shell
-        tandem_repeats=config["sniffles_tandem_repeats"] or "",
-    threads: 8
+        tandem_repeats=get_tandem_repeats_from_wildcards,
+    threads: 32
     envmodules:
-        "sniffles/2.0.7",
+        "sniffles/2.3.3",
+    shadow:
+        "minimal"
     shell:
         """
         args=()
@@ -365,9 +388,9 @@ rule sniffles2_vcf:
 
         sniffles \
             --threads {threads} \
-            --reference "{input.fa}" \
-            --input "{input.tsv}" \
-            --vcf "{output.vcf}" \
+            --reference "{input.fa:q}" \
+            --input "{input.tsv:q}" \
+            --vcf "{output:q}" \
             "${{args[@]}}"
         """
 
@@ -376,107 +399,19 @@ rule sniffles2_vcf:
 ## QC
 
 
-rule fastqc_fastq:
+rule qc_metrics:
     input:
-        fq=f"{RESULTS_DIR}/{{sample}}.fq.gz",
+        passed=f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.pass.bam",
+        failed=f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.fail.bam",
     output:
-        html=f"{RESULTS_DIR}/statistics/premap/{{sample}}_fastqc.html",
-        data=f"{RESULTS_DIR}/statistics/premap/{{sample}}_fastqc.zip",
-    params:
-        outdir=os.path.join(RESULTS_DIR, "statistics", "premap"),
-        sample=config["qc_sample"],
-    threads: 4
-    envmodules:
-        "perl/5.26.3",
-        "openjdk/20.0.0",
-        # FIXME: Update to 0.12.1 or later
-        "fastqc/0.12.1",  # requies perl and openjdk
-        "seqtk/1.4",
-    shell:
-        """
-        seqtk sample {input:q} {params.sample} \
-            | fastqc --memory 10000 -f fastq -o {params.outdir:q} "stdin:{wildcards.sample}"
-        """
-
-
-rule fastqc_bam:
-    input:
-        bam=f"{RESULTS_DIR}/{{sample}}.{{kind}}.bam",
-    output:
-        html=f"{RESULTS_DIR}/statistics/postmap/{{sample}}_{{kind}}_fastqc.html",
-        data=f"{RESULTS_DIR}/statistics/postmap/{{sample}}_{{kind}}_fastqc.zip",
-    threads: 4
-    params:
-        outdir=os.path.join(RESULTS_DIR, "statistics", "postmap"),
-        sample=config["qc_sample"],
-    envmodules:
-        "perl/5.26.3",
-        "openjdk/20.0.0",
-        "fastqc/0.12.1",  # requires perl and openjdk
-        "libdeflate/1.18",
-        "samtools-libdeflate/1.18",
-    shell:
-        r"""
-        samtools bam2fq -@ {threads} {input:q} \
-            | seqtk sample - {params.sample} \
-            | fastqc --memory 10000 --java {SCRIPTS_DIR}/java_wrapper.sh -f fastq -o {params.outdir:q} stdin:{wildcards.sample}_{wildcards.kind}
-        """
-
-
-#######################################################################################
-
-
-rule multiqc_fastq:
-    input:
-        zip=expand(
-            f"{RESULTS_DIR}/statistics/premap/{{sample}}_fastqc.zip", sample=SAMPLES
-        ),
-    output:
-        html=f"{RESULTS_DIR}/statistics/premap/multiqc.html",
-        data=f"{RESULTS_DIR}/statistics/premap/multiqc_data.zip",
-    # FIXME: Needs envmodule
-    shell:
-        r"""
-        multiqc --zip-data-dir \
-            --filename {output.html} \
-            {input.zip}
-        """
-
-
-rule multiqc_bam:
-    input:
-        zip=expand(
-            f"{RESULTS_DIR}/statistics/postmap/{{sample}}_{{kind}}_fastqc.zip",
-            sample=SAMPLES,
-            kind=("pass", "fail"),
-        ),
-    output:
-        html=f"{RESULTS_DIR}/statistics/postmap/multiqc.html",
-        data=f"{RESULTS_DIR}/statistics/postmap/multiqc_data.zip",
-    # FIXME: Needs envmodule
-    shell:
-        r"""
-        multiqc --zip-data-dir \
-            --filename {output.html} \
-            {input.zip}
-        """
-
-
-#######################################################################################
-
-
-rule qc_stats:
-    input:
-        passed=f"{RESULTS_DIR}/{{sample}}.pass.bam",
-        failed=f"{RESULTS_DIR}/{{sample}}.fail.bam",
-    output:
-        json=f"{RESULTS_DIR}/{{sample}}.cache/metrics.json",
+        f"{RESULTS_DIR}/alignments/{{sample}}.{{genome}}.json",
     params:
         sample=config["qc_sample"],
+        script=os.path.abspath("scripts/qc_metrics.py"),
     threads: 4
     shell:
         r"""
-        ./venv/bin/python3 scripts/qc_metrics.py \
+        python3 {params.script:q} \
             --sample-size {params.sample} \
             --output {output:q} \
             --threads {threads} \
@@ -484,12 +419,33 @@ rule qc_stats:
         """
 
 
-rule qc_stats_join:
+rule qc_metrics_join:
     input:
-        expand(f"{RESULTS_DIR}/{{sample}}.cache/metrics.json", sample=SAMPLES),
+        lambda wildcards: expand(
+            f"{RESULTS_DIR}/alignments/{{sample}}.{wildcards.genome}.json",
+            sample=SAMPLE_NAMES,
+        ),
     output:
-        f"{RESULTS_DIR}/statistics/metrics.json",
+        f"{RESULTS_DIR}/statistics/metrics.{{genome}}.json",
     shell:
         r"""
         cat {input:q} > {output:q}
+        """
+
+
+rule qc_metrics_report:
+    input:
+        f"{RESULTS_DIR}/statistics/metrics.{{genome}}.json",
+    output:
+        f"{RESULTS_DIR}/statistics/metrics.{{genome}}.experiments.tsv",
+        f"{RESULTS_DIR}/statistics/metrics.{{genome}}.jpg.html",
+        f"{RESULTS_DIR}/statistics/metrics.{{genome}}.mapping.tsv",
+        f"{RESULTS_DIR}/statistics/metrics.{{genome}}.sequencing.tsv",
+    params:
+        script=os.path.abspath("scripts/qc_report.py"),
+        prefix=f"{RESULTS_DIR}/statistics/metrics.{{genome}}",
+    shell:
+        r"""
+        python3 {params.script:q} --image-format jpg \
+            {input:q} {params.prefix:q}
         """
